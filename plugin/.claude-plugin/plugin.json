@@ -3,6 +3,13 @@
   "version": "0.5.13",
   "description": "Approve Claude Code permission requests from your Android phone — RTS-style voice lines and gestures.",
   "license": "MIT",
+  "author": {
+    "name": "bitlionaire",
+    "email": "bitlionaire.me@gmail.com",
+    "url": "https://horncall.bitlionaire.me"
+  },
+  "homepage": "https://horncall.bitlionaire.me",
+  "repository": "https://github.com/bitlionaire/horncall",
   "keywords": [
     "permissions",
     "android",

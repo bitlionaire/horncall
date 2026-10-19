@@ -2,7 +2,8 @@
   "name": "horncall",
   "description": "Phone approvals for Claude Code permission requests.",
   "owner": {
-    "name": "Horncall contributors"
+    "name": "bitlionaire",
+    "email": "bitlionaire.me@gmail.com"
   },
   "plugins": [
     {
