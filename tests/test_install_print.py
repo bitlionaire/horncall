@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from approver import cli, install, setup
 
 
@@ -118,6 +120,30 @@ def test_statusline_notes_claude_limits_for_the_phone(approver_home, monkeypatch
     assert statusline.main() == 0
     assert "5h 40%" in capsys.readouterr().out
     assert json.loads((approver_home / "claude-vitals.json").read_text())["s1"]["ctx_left"] == 88
+
+
+def test_setup_over_ssh_draws_the_qr_in_the_terminal(tmp_path, monkeypatch):
+    fake_homes(tmp_path, monkeypatch)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(setup.shutil, "which", lambda name: None)
+    monkeypatch.setenv("SSH_CONNECTION", "10.0.0.2 50000 10.0.0.1 22")
+    opened = []
+
+    class Link:
+        def __init__(self, *a):
+            pass
+
+        def request_and_wait(self, *a, **k):
+            return None
+
+    said = []
+    setup.run(ask=lambda q: "", say=said.append, open_page=lambda u: opened.append(u) or True,
+              link_factory=Link, test_timeout=1)
+    text = "\n".join(said)
+    assert not opened  # no browser on a remote machine
+    assert "Scan this QR code in the app" in text and "horncall://pair?" in text
+    pytest.importorskip("qrcode")
+    assert any(line.count("█") > 10 for line in said)  # the QR itself, drawn with block characters
 
 
 def test_launcher_copies_a_downloaded_package_to_the_app_folder(tmp_path):

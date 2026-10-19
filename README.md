@@ -17,7 +17,8 @@ hook systems and forwards a permission question to the phone only while you swit
 
 ## Install
 
-Pick one. All of them end with the same pairing step (`setup` shows a QR code to scan in the app).
+Pick one. All of them end with the same pairing step: `setup` shows a QR code to scan in the app, in the
+browser or, over SSH and on headless servers, right in the terminal (`horncall pair` draws it there too).
 
 **Claude Code plugin** (Claude Code keeps it up to date):
 

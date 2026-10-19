@@ -21,6 +21,22 @@ def pairing_uri(config: Config) -> str:
     return f"{PAIR_SCHEME}?{query}"
 
 
+def print_qr(uri: str, say=print) -> bool:
+    """The pairing QR drawn in the terminal (works over SSH). False when qrcode isn't installed."""
+    try:
+        import io
+        import qrcode
+    except ImportError:
+        say("(install 'qrcode' to see a QR code here)")
+        return False
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(uri)
+    out = io.StringIO()
+    qr.print_ascii(out=out, invert=True)
+    say(out.getvalue().rstrip("\n"))
+    return True
+
+
 def command() -> str:
     """How the user runs us: `horncall` (pip/pipx) or `approver` (plugin folder, also /horncall:approver)."""
     from . import install
@@ -49,17 +65,15 @@ def cmd_pair(args) -> None:
     config.save()
 
     uri = pairing_uri(config)
-    try:
-        import qrcode
-        qr = qrcode.QRCode(border=1)
-        qr.add_data(uri)
-        qr.print_ascii(invert=True)
-        from qrcode.image.svg import SvgPathImage
-        svg = home_dir() / "pair-qr.svg"
-        qrcode.make(uri, image_factory=SvgPathImage).save(str(svg))
-        print(f"QR also saved to: {svg}")
-    except ImportError:
-        print("(install 'qrcode' to see a QR code here)")
+    if print_qr(uri):
+        try:
+            import qrcode
+            from qrcode.image.svg import SvgPathImage
+            svg = home_dir() / "pair-qr.svg"
+            qrcode.make(uri, image_factory=SvgPathImage).save(str(svg))
+            print(f"QR also saved to: {svg}")
+        except (ImportError, OSError):
+            pass
     print("\nScan it in the Horncall app, or paste this code:\n")
     print(uri)
     print(f"\nDevice: {config.device_name}   Server: {config.server}")

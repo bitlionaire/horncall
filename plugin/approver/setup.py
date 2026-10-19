@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import sys
 import shutil
 import subprocess
 import time
@@ -135,6 +136,13 @@ def remove_app_dir() -> str:
     return f"Program folder {app} removed" if not app.exists() else f"Delete {app} by hand (files in use)"
 
 
+def headless() -> bool:
+    """No browser to open here: an SSH session, or Linux without a display (VPS, container, WSL)."""
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return True
+    return sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def pairing_page(config: Config, uri: str) -> Path:
     """A local page with a big QR code (consoles draw QR codes badly)."""
     import qrcode
@@ -154,7 +162,7 @@ h1{{color:#FFC857;letter-spacing:.08em}}</style>
 
 def run(ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
         open_page: Callable[[str], bool] = webbrowser.open, link_factory=Link, test_timeout: int = 120) -> int:
-    from .cli import pairing_uri
+    from .cli import pairing_uri, print_qr
 
     raw_ask = ask
 
@@ -219,12 +227,18 @@ def run(ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
     if config.phones:
         say(f"   Already paired with {len(config.phones)} phone(s). A new phone can join in the next 10 min.")
     uri = pairing_uri(config)
-    try:
-        page = pairing_page(config, uri)
-        opened = open_page(page.as_uri())
-        say(f"   Scan the QR code in the browser{'' if opened else f': {page}'}")
-    except ImportError:
-        say(f"   Paste this code in the app (Paste link):\n   {uri}")
+    opened = False
+    if not headless():
+        try:
+            opened = open_page(pairing_page(config, uri).as_uri())
+        except (ImportError, OSError):
+            opened = False
+    if opened:
+        say("   Scan the QR code in the browser (in the app: Scan QR)")
+    else:  # over SSH, on a server without a screen, or no browser: the QR right here in the terminal
+        say("   Scan this QR code in the app (Scan QR). Too big? Widen the window or zoom out.")
+        print_qr(uri, say)
+    say(f"   No camera? In the app tap Paste link and paste:\n   {uri}")
     ask("   Press Enter when the phone shows this PC in the barracks… ")
 
     say("\n4/4  Test order — answer it on the phone")
