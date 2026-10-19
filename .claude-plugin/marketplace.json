@@ -1,0 +1,14 @@
+{
+  "name": "horncall",
+  "description": "Phone approvals for Claude Code permission requests.",
+  "owner": {
+    "name": "Horncall contributors"
+  },
+  "plugins": [
+    {
+      "name": "horncall",
+      "source": "./plugin",
+      "description": "Approve Claude Code permission requests from your Android phone — RTS-style voice lines and gestures."
+    }
+  ]
+}
