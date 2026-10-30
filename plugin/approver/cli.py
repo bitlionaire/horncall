@@ -8,7 +8,7 @@ import sys
 import time
 import urllib.parse
 
-from . import __version__, crypto, phones, protocol
+from . import __version__, agents as agent_registry, crypto, phones, protocol
 from .config import Config, State, config_path, home_dir
 from .link import Link
 from .transport import Ntfy
@@ -126,6 +126,9 @@ def cmd_status(args) -> None:
     agents = ([f"claude ({' + '.join(claude)})"] if claude else []) + [
         name for name, (_, _, has) in install.INSTALLERS.items() if has() and name not in ("claude", "claude-statusline")]
     print(f"agents: {', '.join(agents) or 'none — run setup'}")
+    from . import compat
+    for warning in compat.floor_warnings([a.split(" ")[0] for a in agents]):
+        print(f"warning: {warning}")
     latest =(Ntfy(config.server).latest_versions() or {}).get("plugin", {})
     if _newer(latest.get("version", ""), __version__):
         print(f"update: plugin {latest['version']} is available — run: {command()} update")
@@ -315,19 +318,19 @@ def build_parser(prog: str = "approver") -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_name)
 
     p = sub.add_parser("hook", help="permission hook entry point (called by the AI agent)")
-    p.add_argument("agent", nargs="?", default="claude", choices=["claude", "gemini", "copilot", "codex"])
+    p.add_argument("agent", nargs="?", default="claude", choices=list(agent_registry.AGENTS))
     p.set_defaults(func=cmd_hook)
 
     p = sub.add_parser("event", help="task start/end hook entry point (called by the AI agent)")
-    p.add_argument("agent", choices=["claude", "gemini", "copilot", "codex"])
+    p.add_argument("agent", choices=list(agent_registry.AGENTS))
     p.add_argument("state", choices=["working", "idle"])
     p.set_defaults(func=cmd_event)
 
     p = sub.add_parser("posttool", help="after-tool hook: drop the phone card of a question answered on the PC")
-    p.add_argument("agent", nargs="?", default="claude", choices=["claude", "gemini", "copilot", "codex"])
+    p.add_argument("agent", nargs="?", default="claude", choices=list(agent_registry.AGENTS))
     p.set_defaults(func=cmd_posttool)
 
-    agents = ["claude", "gemini", "copilot", "codex", "claude-statusline"]
+    agents = list(agent_registry.AGENTS) + ["claude-statusline"]
     p = sub.add_parser("install", help="connect an AI agent to the phone")
     p.add_argument("agent", choices=agents, help="claude: hooks in Claude's settings.json (instead of the plugin); "
                                                  "claude-statusline: Claude's plan limits for the phone's HP bar")

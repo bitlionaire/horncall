@@ -1,0 +1,27 @@
+{
+  "agent": "copilot",
+  "agent_version": "1.0.102",
+  "kind": "posttool",
+  "captured": "2026-10-21",
+  "source": "capture (HORNCALL_CAPTURE=1, values redacted by the hook)",
+  "input": {
+    "sessionId": "<redacted:36>",
+    "timestamp": 1792613566648,
+    "cwd": "<redacted:11>",
+    "toolName": "powershell",
+    "toolArgs": {
+      "command": "<redacted:10>",
+      "description": "<redacted:29>"
+    },
+    "toolResult": {
+      "resultType": "<redacted:7>",
+      "textResultForLlm": "<redacted:280>"
+    }
+  },
+  "expect": {
+    "tool": "PowerShell",
+    "nonempty": [
+      "command"
+    ]
+  }
+}

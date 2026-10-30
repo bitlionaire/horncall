@@ -33,16 +33,18 @@ class Link:
             self.key, self.topic_req, protocol.make_cancel(request_id, reason)))
 
     def request_and_wait(self, request: dict, deadline: float,
-                         accept: Callable[[dict], bool] | None = None) -> dict | None:
+                         accept: Callable[[dict], bool] | None = None,
+                         stop: Callable[[], bool] | None = None) -> dict | None:
         """Subscribe to responses first, send the request once subscribed, wait for the answer.
 
         `accept` can reject an answer (e.g. not signed by a trusted phone); waiting then goes on.
+        `stop` returning True gives up waiting (the question was answered elsewhere): the result is None.
         """
         since = int(time.time()) - 5
         on_open = lambda: self.send_request(request)  # noqa: E731
-        for message in self._messages(self.topic_res, since, deadline, on_open):
+        for message in self._messages(self.topic_res, since, deadline, on_open, stop):
             if message.get("type") == "response" and message.get("id") == request["id"] \
-                    and message.get("decision") in ("allow", "deny") and (accept is None or accept(message)):
+                    and message.get("decision") in protocol.DECISIONS and (accept is None or accept(message)):
                 return message
         return None
 
@@ -59,9 +61,11 @@ class Link:
         self.transport.publish(self.topic_res, crypto.seal(self.key, self.topic_res, response))
 
     # -----------------------------------------------------------------------
-    def _messages(self, topic: str, since: int, deadline: float, on_open=None) -> Iterator[dict]:
+    def _messages(self, topic: str, since: int, deadline: float, on_open=None, stop=None) -> Iterator[dict]:
         seen: set[str] = set()
-        for body in self.transport.subscribe(topic, since, deadline, on_open):
+        # Transports without a stop check (test doubles) are called as before.
+        extra = {"stop": stop} if stop is not None else {}
+        for body in self.transport.subscribe(topic, since, deadline, on_open, **extra):
             try:
                 message = crypto.open_envelope(self.key, topic, body)
             except crypto.CryptoError:

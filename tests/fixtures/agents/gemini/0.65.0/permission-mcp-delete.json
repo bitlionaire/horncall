@@ -1,0 +1,29 @@
+{
+  "agent": "gemini",
+  "agent_version": "0.65.0",
+  "kind": "permission",
+  "captured": "2026-10-21",
+  "source": "docs field names, values made up",
+  "note": "hooks reference: MCP tools are named mcp_<server_name>_<tool_name>; mcp_context is optional metadata",
+  "input": {
+    "cwd": "D:/repo",
+    "hook_event_name": "BeforeTool",
+    "session_id": "s-gemini",
+    "timestamp": "2026-10-21T10:00:00Z",
+    "tool_name": "mcp_github_delete_file",
+    "tool_input": {
+      "path": "README.md"
+    },
+    "mcp_context": {
+      "server_name": "github"
+    },
+    "transcript_path": "C:/Users/u/.gemini/tmp/x/chats/s.json"
+  },
+  "expect": {
+    "tool": "mcp_github_delete_file",
+    "nonempty": [
+      "path"
+    ],
+    "session": "s-gemini"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "agent": "gemini",
+  "agent_version": "unknown (hook.log 2026-10-16)",
+  "kind": "permission",
+  "captured": "2026-10-16",
+  "source": "hook.log field names, values made up",
+  "note": "hook.log saw no tool_input keys for this run; command/description are the documented arguments",
+  "input": {
+    "cwd": "D:/repo",
+    "hook_event_name": "BeforeTool",
+    "session_id": "s-gemini",
+    "timestamp": "2026-10-16T10:00:00Z",
+    "tool_input": {
+      "command": "rm -rf dist",
+      "description": "Clean build output"
+    },
+    "tool_name": "run_shell_command",
+    "transcript_path": "C:/Users/u/.gemini/tmp/x/chats/s.json"
+  },
+  "expect": {
+    "tool": "Bash",
+    "nonempty": [
+      "command"
+    ],
+    "session": "s-gemini"
+  }
+}

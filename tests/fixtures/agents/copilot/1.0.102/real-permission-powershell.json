@@ -1,0 +1,24 @@
+{
+  "agent": "copilot",
+  "agent_version": "1.0.102",
+  "kind": "permission",
+  "captured": "2026-10-21",
+  "source": "capture (HORNCALL_CAPTURE=1, values redacted by the hook)",
+  "input": {
+    "hookName": "permissionRequest",
+    "sessionId": "<redacted:36>",
+    "timestamp": 1792613626313,
+    "cwd": "<redacted:11>",
+    "toolName": "powershell",
+    "toolInput": {
+      "command": "<redacted:268>"
+    },
+    "permissionSuggestions": []
+  },
+  "expect": {
+    "tool": "PowerShell",
+    "nonempty": [
+      "command"
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "agent": "gemini",
+  "agent_version": "unknown (hook.log 2026-10-18)",
+  "kind": "working",
+  "captured": "2026-10-16",
+  "source": "hook.log field names, values made up",
+  "input": {
+    "cwd": "D:/repo",
+    "hook_event_name": "BeforeAgent",
+    "prompt": "fix the tests",
+    "session_id": "s-gemini",
+    "timestamp": "2026-10-18T10:00:00Z",
+    "transcript_path": "C:/Users/u/.gemini/tmp/x/chats/s.json"
+  },
+  "expect": {
+    "session": "s-gemini"
+  }
+}

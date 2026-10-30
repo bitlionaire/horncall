@@ -1,0 +1,18 @@
+{
+  "agent": "copilot",
+  "agent_version": "1.0.102",
+  "kind": "permission",
+  "captured": "2026-10-21",
+  "source": "docs field names, values made up",
+  "note": "hooks-configuration: an allow does not pre-approve a sandbox-escape request, only deny takes effect",
+  "input": {
+    "cwd": "D:/repo",
+    "hookName": "permissionRequest",
+    "permissionSuggestions": [],
+    "sessionId": "s-copilot",
+    "timestamp": 1761000000,
+    "toolInput": {"command": "npm install", "requestSandboxBypass": true},
+    "toolName": "powershell"
+  },
+  "expect": {"no_opinion": true}
+}

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import crypto, install, phones, protocol
+from . import compat, crypto, install, phones, protocol
 from .config import Config, app_dir, home_dir
 from .link import Link
 
@@ -121,7 +121,7 @@ def detect_tools() -> list[Tool]:
         Tool("copilot", "GitHub Copilot CLI", _found("copilot", ".copilot"), install.state("copilot"), _files("copilot"),
              hook("copilot", "Copilot CLI: hooked up — restart it")),
         Tool("codex", "OpenAI Codex CLI", _found("codex", ".codex"), install.state("codex"), _files("codex"),
-             hook("codex", "Codex CLI: hooked up — in Codex open /hooks and switch the 3 Horncall hooks on")),
+             hook("codex", "Codex CLI: hooked up — in Codex open /hooks and switch the 4 Horncall hooks on")),
     ]
 
 
@@ -183,6 +183,9 @@ def run(ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
     for t in tools:
         say(f"   {'✓' if t.found else '·'} {t.title:20} {labels[t.state] if t.found else 'not found'}")
     notes: list[str] = []
+    for warning in compat.floor_warnings([t.id for t in tools if t.found]):
+        say(f"   ! {warning}")
+        notes.append(warning)
     say("\n2/4  Hook up")
     if not any(t.found for t in tools):
         say("   No AI tool found. Install one (e.g. Claude Code) and run setup again.")

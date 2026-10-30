@@ -1,0 +1,28 @@
+{
+  "agent": "codex",
+  "agent_version": "unknown (hook.log 2026-10-19)",
+  "kind": "permission",
+  "captured": "2026-10-16",
+  "source": "hook.log field names, values made up",
+  "input": {
+    "cwd": "D:/repo",
+    "session_id": "s-codex",
+    "tool_input": {
+      "command": [
+        "bash",
+        "-lc",
+        "git push --force"
+      ],
+      "justification": "Publish the fix"
+    },
+    "tool_name": "shell"
+  },
+  "expect": {
+    "tool": "Bash",
+    "nonempty": [
+      "command",
+      "description"
+    ],
+    "session": "s-codex"
+  }
+}

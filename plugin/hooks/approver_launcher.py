@@ -113,15 +113,18 @@ def main() -> int:
     args = sys.argv[1:]
     if args[:1] == ["statusline"]:
         return statusline()
+    # Capture mode (docs/AGENTS.md) records inputs even with the phone off, so it skips the fast paths.
+    capturing = os.environ.get("HORNCALL_CAPTURE") == "1"
     if args[:1] == ["posttool"]:
         # Runs after EVERY tool call: only start Python's venv when a phone question is still open.
         pending = HOME / "pending"
-        if not is_on() or not venv_python().exists() or not pending.is_dir() or not any(pending.iterdir()):
+        if not venv_python().exists() or not capturing and (
+                not is_on() or not pending.is_dir() or not any(pending.iterdir())):
             return 0
         run_in_venv(args)
         return 0
     if args[:1] in (["hook"], ["event"]):
-        if not is_on() or not venv_python().exists():
+        if not venv_python().exists() or not capturing and not is_on():
             return 0  # fast path: let the agent show its normal dialog / carry on
         run_in_venv(args)
         return 0  # never fail the hook

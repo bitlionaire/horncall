@@ -1,0 +1,15 @@
+{
+  "agent": "copilot",
+  "agent_version": "1.0.102",
+  "kind": "idle",
+  "captured": "2026-10-21",
+  "source": "capture (HORNCALL_CAPTURE=1, values redacted by the hook)",
+  "input": {
+    "sessionId": "<redacted:36>",
+    "timestamp": 1792613577150,
+    "cwd": "<redacted:11>",
+    "transcriptPath": "<redacted:91>",
+    "stopReason": "end_turn",
+    "stop_hook_active": false
+  }
+}

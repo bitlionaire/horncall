@@ -16,6 +16,7 @@ from . import __version__
 
 USER_AGENT = f"horncall/{__version__}"
 KEEPALIVE_SLACK_S = 60  # ntfy sends keepalives every ~45 s
+STOP_CHECK_S = 8  # a waiting hook asks "does anybody still wait for me?" this often
 
 
 DEBUG = bool(os.environ.get("HORNCALL_DEBUG") or os.environ.get("ZUGZUG_DEBUG"))
@@ -48,25 +49,34 @@ class Ntfy:
             raise TransportError(f"publish failed: {exc}") from exc
 
     def subscribe(self, topic: str, since: int | str, deadline: float,
-                  on_open: Callable[[], None] | None = None) -> Iterator[str]:
+                  on_open: Callable[[], None] | None = None,
+                  stop: Callable[[], bool] | None = None) -> Iterator[str]:
         """Yield message bodies from `topic` until `deadline` (unix time). Reconnects on errors.
 
         `on_open` runs once, when the server confirms the first subscription. Publish anything you
         expect a reply to from there: ntfy.sh writes its cache in batches, so a reply sent before
         the subscription is live may be missed even with `since`.
+
+        `stop` is asked every few seconds; once it says True the stream ends (nobody waits any more).
         """
         cursor: int | str = since
         backoff = 1.0
         while time.time() < deadline:
+            if stop is not None and stop():
+                return
             query = urllib.parse.urlencode({"since": cursor})
             req = urllib.request.Request(f"{self.server}/{topic}/json?{query}",
                                          headers={"User-Agent": USER_AGENT})
             remaining = deadline - time.time()
+            # With a stop check the read times out sooner (and reconnects from the cursor), so it gets asked.
+            patience = STOP_CHECK_S if stop is not None else KEEPALIVE_SLACK_S
             _debug("subscribe", topic, "since", cursor)
             try:
-                with urllib.request.urlopen(req, timeout=min(remaining, KEEPALIVE_SLACK_S) + 1) as resp:
+                with urllib.request.urlopen(req, timeout=min(remaining, patience) + 1) as resp:
                     backoff = 1.0
                     while time.time() < deadline:
+                        if stop is not None and stop():
+                            return
                         line = resp.readline()
                         if not line:
                             break  # server closed the stream; reconnect

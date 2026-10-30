@@ -1,0 +1,28 @@
+{
+  "agent": "gemini",
+  "agent_version": "0.64.0",
+  "kind": "permission",
+  "captured": "2026-10-21",
+  "source": "capture (HORNCALL_CAPTURE=1, values redacted by the hook)",
+  "input": {
+    "session_id": "<redacted:36>",
+    "transcript_path": "<redacted:85>",
+    "cwd": "<redacted:11>",
+    "hook_event_name": "BeforeTool",
+    "timestamp": "<redacted:24>",
+    "tool_name": "replace",
+    "tool_input": {
+      "file_path": "<redacted:9>",
+      "instruction": "<redacted:37>",
+      "old_string": "<redacted:11>",
+      "new_string": "<redacted:29>"
+    }
+  },
+  "expect": {
+    "tool": "Edit",
+    "nonempty": [
+      "file_path",
+      "new_string"
+    ]
+  }
+}

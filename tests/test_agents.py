@@ -1,5 +1,6 @@
 import io
 import json
+import os
 
 from approver import agents, hook, install, protocol
 
@@ -49,6 +50,15 @@ def test_codex_argv_shell_and_claude_style_answer():
     assert protocol.risk_reasons(hi.tool, hi.tool_input, hi.cwd)  # force push is flagged
 
 
+def test_codex_keeps_the_description_of_both_shell_shapes():
+    c = agents.get("codex")
+    old = c.parse({"tool_name": "shell", "tool_input": {"command": ["bash", "-lc", "npm test"], "justification": "Run tests"},
+                   "cwd": "/r", "session_id": "k"})
+    new = c.parse({"tool_name": "Bash", "tool_input": {"command": "npm test", "description": "Run tests"},
+                   "cwd": "/r", "session_id": "k"})
+    assert old.tool_input["description"] == new.tool_input["description"] == "Run tests"
+
+
 def _codex_patch(patch, cwd="/r"):
     hi = agents.get("codex").parse({"tool_name": "apply_patch", "tool_input": {"command": patch}, "cwd": cwd})
     return hi, protocol.risk_reasons(hi.tool, hi.tool_input, hi.cwd)
@@ -77,6 +87,9 @@ def test_install_codex_hooks_json(tmp_path, monkeypatch):
     data = json.loads((tmp_path / "hooks.json").read_text())
     assert "hook codex" in data["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
     assert "event codex idle" in data["hooks"]["Stop"][0]["hooks"][0]["command"]
+    # After a command (also a failed one) the card must leave the phone: Codex's PostToolUse runs for both.
+    assert "posttool codex" in data["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+    assert len(install.codex_commands()) == 4
     assert install.codex_installed() and install.uninstall_codex() and not install.codex_installed()
 
 
@@ -103,7 +116,7 @@ def test_gemini_hook_end_to_end_allow(monkeypatch, approver_home):
         def __init__(self, *a):
             pass
 
-        def request_and_wait(self, request, deadline, accept=None):
+        def request_and_wait(self, request, deadline, accept=None, stop=None):
             assert request["agent"] == "gemini" and request["tool"] == "Bash"
             return {"decision": "allow", "via": "gesture"}
 
@@ -200,10 +213,22 @@ def test_install_copilot_writes_own_file(tmp_path, monkeypatch):
     path = install.install_copilot()
     data = json.loads(path.read_text())
     assert data["version"] == 1 and data["hooks"]["permissionRequest"][0]["timeoutSec"] == 1900
-    assert "event copilot working" in data["hooks"]["userPromptSubmitted"][0]["command"]
-    assert "event copilot idle" in data["hooks"]["agentStop"][0]["command"]
-    assert "posttool copilot" in data["hooks"]["postToolUse"][0]["command"]
+    assert "event copilot working" in data["hooks"]["userPromptSubmitted"][0]["bash"]
+    assert "event copilot idle" in data["hooks"]["agentStop"][0]["powershell"]
+    assert "posttool copilot" in data["hooks"]["postToolUse"][0]["bash"]
+    assert "command" not in data["hooks"]["permissionRequest"][0]  # Copilot would copy it to PowerShell as is
+    assert install.copilot_installed() and len(install.copilot_commands()) == 5
+    assert "posttool copilot" in data["hooks"]["postToolUseFailure"][0]["bash"]  # a failed command leaves the phone too
     assert install.uninstall_copilot() and not path.exists()
+
+
+def test_install_copilot_quotes_paths_with_spaces_for_powershell(tmp_path, monkeypatch):
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path))
+    monkeypatch.setattr(install.sys, "_base_executable", r"C:\Program Files\Python312\python.exe", raising=False)
+    entry = json.loads(install.install_copilot().read_text())["hooks"]["permissionRequest"][0]
+    assert entry["bash"].startswith('"C:\\Program Files\\Python312\\python.exe" ')
+    expected = "& " + entry["bash"] if os.name == "nt" else entry["bash"]
+    assert entry["powershell"] == expected
 
 
 def test_copilot_answer_in_terminal_matches_the_phone_question():

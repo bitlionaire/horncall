@@ -71,14 +71,24 @@ class Gemini(Agent):
         "replace": "Edit",
     }
 
+    # MCP tools (mcp_<server>_<tool>) whose name says they only look: no phone card for those.
+    READ_ONLY_WORDS = {"get", "list", "read", "search", "find", "fetch", "view", "show", "query", "describe",
+                       "lookup", "status", "info", "count", "check"}
+
     def parse(self, raw):
         tool = str(raw.get("tool_name", ""))
         ours = self.TOOLS.get(tool)
-        if ours is None:
-            return None  # reads, searches, web fetches: Gemini's own rules decide
         args = raw.get("tool_input") or {}
         if not isinstance(args, dict):
             args = {"input": args}
+        if ours is None and tool.startswith("mcp_"):
+            # With `gemini --yolo` nothing else stops them, so ask unless the name says read-only.
+            words = protocol.tool_words(tool)
+            if words & self.READ_ONLY_WORDS and not words & protocol.RISKY_TOOL_WORDS:
+                return None
+            return HookInput(tool, args, raw.get("cwd"), raw.get("session_id"))
+        if ours is None:
+            return None  # reads, searches, web fetches: Gemini's own rules decide
         if ours == "Bash":
             tool_input = {"command": args.get("command", ""), "description": args.get("description")}
             if args.get("dir_path") or args.get("directory"):
@@ -122,6 +132,8 @@ class Copilot(Agent):
                 args = {"command": args}
         if not isinstance(args, dict):
             args = {"input": args}
+        if args.get("requestSandboxBypass"):
+            return None  # Copilot ignores an allow for leaving its sandbox: a phone card would promise too much
         low = tool.lower()
         if low in self.SHELL or "command" in args and low not in self.WRITE | self.EDIT:
             ours = "PowerShell" if low == "powershell" else "Bash"
@@ -133,7 +145,8 @@ class Copilot(Agent):
         elif low in self.EDIT:
             ours, tool_input = "Edit", {"file_path": args.get("path") or args.get("file_path", ""),
                                         "old_string": args.get("old_str") or args.get("old_string", ""),
-                                        "new_string": args.get("new_str") or args.get("new_string", "")}
+                                        "new_string": args.get("new_str") or args.get("new_string")
+                                                      or args.get("diff", "")}  # 1.0.98 `edit`: {file_path, diff}
         else:
             ours, tool_input = tool, args
         tool_input = {k: v for k, v in tool_input.items() if v is not None}
@@ -166,7 +179,9 @@ class Codex(Claude):
             if isinstance(command, list):
                 # ["bash", "-lc", "npm test"] → the script; anything else → joined argv
                 command = command[-1] if len(command) >= 3 and command[1] in ("-lc", "-c") else " ".join(map(str, command))
-            hi = HookInput("Bash", {"command": str(command), "description": args.get("justification")},
+            # The older shape explains itself in `justification`, the Claude-like `Bash` shape in `description`.
+            hi = HookInput("Bash", {"command": str(command),
+                                    "description": args.get("description") or args.get("justification")},
                            hi.cwd, hi.session_id)
         elif low in ("apply_patch", "applypatch"):
             patch = str(args.get("input") or args.get("patch") or args.get("command") or json.dumps(args))

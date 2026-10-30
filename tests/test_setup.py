@@ -21,7 +21,7 @@ class AnsweringLink:
     def __init__(self, *a):
         pass
 
-    def request_and_wait(self, request, deadline, accept=None):
+    def request_and_wait(self, request, deadline, accept=None, stop=None):
         return {"decision": "allow", "via": "button"}
 
 

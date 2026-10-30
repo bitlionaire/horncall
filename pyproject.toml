@@ -34,6 +34,9 @@ horncall = "approver.entry:main"
 package-dir = { "" = "plugin" }
 packages = ["approver"]
 
+[tool.setuptools.package-data]
+approver = ["compat.json"]
+
 [tool.setuptools.dynamic]
 version = { attr = "approver.__version__" }
 

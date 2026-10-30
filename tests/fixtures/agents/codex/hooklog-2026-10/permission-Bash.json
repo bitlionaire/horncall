@@ -1,0 +1,28 @@
+{
+  "agent": "codex",
+  "agent_version": "unknown (hook.log 2026-10-16)",
+  "kind": "permission",
+  "captured": "2026-10-16",
+  "source": "hook.log field names, values made up",
+  "input": {
+    "cwd": "D:/repo",
+    "hook_event_name": "PermissionRequest",
+    "model": "gpt-5.5-codex",
+    "permission_mode": "default",
+    "session_id": "s-codex",
+    "tool_input": {
+      "command": "npm test",
+      "description": "Run unit tests"
+    },
+    "tool_name": "Bash",
+    "transcript_path": "C:/Users/u/.codex/sessions/x.jsonl",
+    "turn_id": "t1"
+  },
+  "expect": {
+    "tool": "Bash",
+    "nonempty": [
+      "command"
+    ],
+    "session": "s-codex"
+  }
+}

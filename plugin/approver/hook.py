@@ -7,13 +7,15 @@ dialog in charge; printing a decision object answers the request.
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 import time
 from pathlib import Path
 from typing import TextIO
 
-from . import agents, crypto, phones, protocol, vitals
-from .config import Config, State, log_path
+from . import agents, compat, crypto, phones, protocol, vitals
+from .config import Config, State, home_dir, log_path
 from .link import Link
 
 
@@ -35,6 +37,47 @@ def log(event: str, **fields) -> None:
         pass
 
 
+# --- Capture mode (HORNCALL_CAPTURE=1): real input samples for tests/fixtures/agents (docs/AGENTS.md) ---
+
+# Values worth keeping: they name things, they don't carry the user's commands, paths or text.
+CAPTURE_KEEP = {"tool_name", "toolName", "hook_event_name", "hookEventName", "hookName", "permission_mode",
+                "agentType", "stopReason", "kind", "tool", "type", "model", "stop_hook_active"}
+
+
+def _redact(value, key: str = ""):
+    if isinstance(value, dict):
+        return {k: _redact(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact(v, key) for v in value]
+    if isinstance(value, str) and key not in CAPTURE_KEEP:
+        return f"<redacted:{len(value)}>"
+    return value
+
+
+def _agent_version(agent: str) -> str:
+    try:
+        return compat.installed_version(compat.load()[agent]) or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def capture(agent: str, kind: str, raw: dict) -> None:
+    """Save the input's shape (values redacted) with the agent's version. Off unless HORNCALL_CAPTURE=1."""
+    if os.environ.get("HORNCALL_CAPTURE") != "1":
+        return
+    try:
+        version = _agent_version(agent)
+        name = str(raw.get("tool_name") or raw.get("toolName") or kind)
+        folder = home_dir() / "captures" / agent / version
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{kind}-{re.sub(r'[^A-Za-z0-9_.-]', '_', name)[:40]}-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        sample = {"agent": agent, "agent_version": version, "kind": kind,
+                  "captured": time.strftime("%Y-%m-%d"), "source": "capture", "input": _redact(raw)}
+        path.write_text(json.dumps(sample, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass  # capturing must never break the agent
+
+
 def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude") -> int:
     adapter = agents.get(agent)
     try:
@@ -44,6 +87,7 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
         return 0
     if not isinstance(raw, dict):
         return 0
+    capture(adapter.name, "permission", raw)
     if adapter.name != "claude":
         # Field names only (never values): lets us confirm each agent's input shape from a real run.
         tool_args = raw.get("toolInput") or raw.get("toolArgs") or raw.get("tool_input")
@@ -74,7 +118,7 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
     link = link_factory(config.key, config.server)
     deadline = time.time() + wait_s
     log("request", id=request["id"], agent=adapter.name, tool=hook_input.tool, risk=request["risk"],
-        session=request.get("session"))
+        session=request.get("session"), fp=request["fp"])
 
     def accept(response: dict) -> bool:
         verdict = phones.judge(config, response)
@@ -84,16 +128,25 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
             log("rejected", id=request["id"], reason=verdict)  # e.g. someone with a copy of the key
         return verdict in ("ok", "joined")
 
-    # While we wait, the same question is open on the PC. If it's answered there, the agent kills
-    # this process; the marker stays and the PostToolUse / Stop hook tells the phone (see posttool).
-    marker = _pending_marker(request["fp"], hook_input.session_id, request["id"])
+    # While we wait, the same question is open on the PC. If it's answered there, the agent may kill
+    # this process (the marker stays and the PostToolUse / Stop hook tells the phone, see posttool) or
+    # leave it running (Claude Code does): then posttool / run_event removes the marker and we give up.
+    marker = _pending_marker(request["fp"], hook_input.session_id, request["id"], hook_input.tool)
+    answered_on_pc = False
     try:
-        response = link.request_and_wait(request, deadline, accept=accept)
+        response = link.request_and_wait(request, deadline, accept=accept,
+                                         stop=(lambda: not marker.exists()) if marker is not None else None)
+        answered_on_pc = response is None and marker is not None and not marker.exists()
     except Exception as exc:  # network trouble must never break the agent
         log("error", id=request["id"], error=exc.__class__.__name__)
         response = None
     finally:
         _drop(marker)
+
+    if answered_on_pc:
+        # The card is already gone from the phone (it was told "resolved"): nothing to cancel, nothing to say.
+        log("answered-on-pc", id=request["id"])
+        return 0
 
     if response is None:
         log("timeout", id=request["id"], on_timeout=config.on_timeout)
@@ -106,6 +159,20 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
         return 0
 
     log("response", id=request["id"], decision=response["decision"], via=response.get("via"))
+    if response["decision"] == "pass":
+        # The phone is muted ("ask me at the PC"): no opinion, the agent's own dialog decides. The phone
+        # showed no card, so there is nothing to cancel.
+        log("passed-by-phone", id=request["id"], via=response.get("via"))
+        return 0
+    if response["decision"] == "allow" and request.get("needs_pc"):
+        # A choice or a plan decision: Claude Code needs the answer itself, a bare allow answers nothing.
+        # Say nothing (the question stays on the PC) and take the card off the phone quietly.
+        log("needs-pc", id=request["id"], tool=hook_input.tool)
+        try:
+            link.send_resolved(request["fp"], request["id"])
+        except Exception:
+            pass
+        return 0
     if response["decision"] == "allow":
         _emit(stdout, adapter.allow())
     else:
@@ -125,6 +192,8 @@ def run_event(stdin: TextIO, agent: str, state_name: str, link_factory=Link) -> 
         raw = json.loads(stdin.read() or "{}")
     except ValueError:
         return 0
+    if isinstance(raw, dict):
+        capture(adapter.name, state_name, raw)
     state = State.load()
     config = Config.load()
     if not isinstance(raw, dict) or not state.is_on() or config is None:
@@ -134,6 +203,8 @@ def run_event(stdin: TextIO, agent: str, state_name: str, link_factory=Link) -> 
         # Field names and a short session id only: shows whether start and end report the same chat.
         log("event-shape", agent=adapter.name, state=state_name, keys=sorted(raw)[:30],
             session=str(session_id or "")[:8], transcript=Path(str(raw.get("transcript_path") or "")).name[:60])
+    if state_name == "working":
+        _resolve_session_markers(str(session_id) if session_id else None, adapter.name, config, link_factory)
     now = int(time.time())
     transcript = str(raw.get("transcript_path") or "")
     started, task_session = _task_clock(str(session_id or "?"), state_name, now, transcript)
@@ -190,12 +261,13 @@ def pending_dir():
     return log_path().with_name("pending")
 
 
-def _pending_marker(fp: str, session_id: str | None, request_id: str):
+def _pending_marker(fp: str, session_id: str | None, request_id: str, tool: str | None = None):
     # One marker per request: two identical calls running at once each keep their own.
     path = pending_dir() / f"{fp}.{request_id}"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"session": session_id, "id": request_id, "t": int(time.time())}), encoding="utf-8")
+        path.write_text(json.dumps({"session": session_id, "id": request_id, "t": int(time.time()), "tool": tool, "fp": fp}),
+                        encoding="utf-8")
     except OSError:
         return None
     return path
@@ -219,24 +291,78 @@ def run_posttool(stdin: TextIO, agent: str, link_factory=Link) -> int:
         return 0
     if not isinstance(raw, dict):
         return 0
+    capture(adapter.name, "posttool", raw)
     hook_input = adapter.parse(raw)
     config = Config.load()
     if hook_input is None or config is None:
         return 0
     fp = protocol.order_fp(hook_input.session_id, hook_input.tool, hook_input.tool_input)
     folder = pending_dir()
-    markers = sorted(folder.glob(f"{fp}.*"), key=lambda p: p.stat().st_mtime) if folder.exists() else []
+    markers = sorted(folder.glob(f"{fp}.*"), key=_mtime) if folder.exists() else []
     if not markers:
+        marker = _lone_marker(hook_input.session_id, hook_input.tool)
+        if marker is not None:
+            # Some tools come back with other input than they were asked with (AskUserQuestion adds the
+            # answers): the only waiting call of this chat and tool is the one that just ran.
+            _resolve(marker, adapter.name, config, link_factory, via="same-tool")
+            return 0
+        # Runs only while some order waits (the launcher skips it otherwise): a call that is not one of
+        # them is normal (parallel tools), but this line tells a real mismatch apart when a card stays.
+        waiting = len(list(folder.glob("*"))) if folder.exists() else 0
+        if waiting:
+            log("posttool-other", agent=adapter.name, tool=hook_input.tool, fp=fp, waiting=waiting)
         return 0
-    marker = markers[0]  # the oldest identical call is the one that just ran
-    request_id = marker.name[len(fp) + 1:]
+    _resolve(markers[0], adapter.name, config, link_factory)  # the oldest identical call is the one that just ran
+    return 0
+
+
+def _mtime(path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0  # removed meanwhile by the hook that owned it
+
+
+def _marker_data(path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _lone_marker(session_id: str | None, tool: str):
+    """The one waiting order of this chat for this tool, or None (none, or several: no guessing).
+    Never for shell commands: a wrong guess would take a card down while the agent still waits for it."""
+    folder = pending_dir()
+    if tool in ("Bash", "PowerShell") or not folder.exists():
+        return None
+    same = [p for p in folder.iterdir() if (d := _marker_data(p)).get("session") == session_id and d.get("tool") == tool]
+    return same[0] if len(same) == 1 else None
+
+
+def _resolve(marker, agent: str, config, link_factory, via: str = "fp") -> None:
+    """The call behind this marker was answered on the PC: drop the marker and the phone's card."""
+    fp, _, request_id = marker.name.partition(".")
+    data = _marker_data(marker)
+    request_id = data.get("id") or request_id
     _drop(marker)
     try:
         link_factory(config.key, config.server).send_resolved(fp, request_id)
-        log("resolved-on-pc", agent=adapter.name, fp=fp)
+        log("resolved-on-pc", agent=agent, fp=fp, id=request_id, via=via)
     except Exception as exc:
         log("error", event="resolved", error=exc.__class__.__name__)
-    return 0
+
+
+def _resolve_session_markers(session_id: str | None, agent: str, config, link_factory) -> None:
+    """A new task started in this chat: whatever it still "asked" was answered on the PC (or refused there,
+    which no hook reports). The phone drops those cards."""
+    folder = pending_dir()
+    if not folder.exists() or not session_id:
+        return
+    for marker in sorted(folder.iterdir(), key=_mtime):
+        if _marker_data(marker).get("session") == session_id:
+            _resolve(marker, agent, config, link_factory, via="new-task")
 
 
 def _clear_session_markers(session_id: str | None) -> None:

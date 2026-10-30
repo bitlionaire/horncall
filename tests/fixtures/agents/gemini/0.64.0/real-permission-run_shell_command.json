@@ -1,0 +1,25 @@
+{
+  "agent": "gemini",
+  "agent_version": "0.64.0",
+  "kind": "permission",
+  "captured": "2026-10-21",
+  "source": "capture (HORNCALL_CAPTURE=1, values redacted by the hook)",
+  "input": {
+    "session_id": "<redacted:36>",
+    "transcript_path": "<redacted:85>",
+    "cwd": "<redacted:11>",
+    "hook_event_name": "BeforeTool",
+    "timestamp": "<redacted:24>",
+    "tool_name": "run_shell_command",
+    "tool_input": {
+      "command": "<redacted:47>",
+      "description": "<redacted:53>"
+    }
+  },
+  "expect": {
+    "tool": "Bash",
+    "nonempty": [
+      "command"
+    ]
+  }
+}

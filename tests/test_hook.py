@@ -22,10 +22,13 @@ class FakeTransport:
         if self.phone:
             self.phone(topic, body)
 
-    def subscribe(self, topic, since, deadline, on_open=None):
+    def subscribe(self, topic, since, deadline, on_open=None, stop=None):
         if on_open:
             on_open()
-        yield from list(self.topics.get(topic, []))
+        for body in list(self.topics.get(topic, [])):
+            if stop is not None and stop():
+                return
+            yield body
 
 
 def make_link_factory(transport):
@@ -163,6 +166,21 @@ def sent_types(transport):
     return [crypto.open_envelope(config.key, link.topic_req, b)["type"] for b in transport.topics.get(link.topic_req, [])]
 
 
+def test_pass_from_a_muted_phone_asks_at_the_pc_straight_away():
+    setup()
+    transport = phone_answering("pass", "mute")
+    assert run_hook(transport) is None  # no opinion: the agent's own dialog decides
+    assert sent_types(transport) == ["request"]  # the phone showed no card, so nothing to cancel
+    assert not any(hook.pending_dir().iterdir())
+
+
+def test_unknown_decision_is_still_ignored():
+    setup(timeout_s=0)
+    transport = phone_answering("maybe")
+    assert run_hook(transport) is None
+    assert sent_types(transport) == ["request", "cancel"]  # waited, then timed out like an unanswered question
+
+
 def test_timeout_falls_back_to_dialog_and_clears_the_phone_card():
     setup(timeout_s=0)
     transport = FakeTransport()
@@ -208,6 +226,105 @@ def test_two_identical_calls_are_resolved_one_by_one():
     sent = [crypto.open_envelope(config.key, link.topic_req, b) for b in transport.topics[link.topic_req]]
     assert [m["request"] for m in sent] == ["req-1"]  # the second call still waits on the phone
     assert [p.name.split(".")[1] for p in hook.pending_dir().iterdir()] == ["req-2"]
+
+
+def _post(transport, **fields):
+    post = {**HOOK_INPUT, "session_id": "s1", "hook_event_name": "PostToolUse", **fields}
+    hook.run_posttool(io.StringIO(json.dumps(post)), "claude", make_link_factory(transport))
+
+
+def _sent(transport):
+    config = Config.load()
+    link = Link(config.key, config.server, transport=transport)
+    return [crypto.open_envelope(config.key, link.topic_req, b) for b in transport.topics.get(link.topic_req, [])]
+
+
+def test_failed_command_drops_the_phone_card_too():
+    """PostToolUseFailure carries the same tool_name and tool_input: same fingerprint, same handler."""
+    setup()
+    request = __import__("approver.protocol", fromlist=["x"]).build_request(dict(HOOK_INPUT, session_id="s1"), "PC", 60, 1500)
+    hook._pending_marker(request["fp"], "s1", request["id"], "Bash")
+    transport = FakeTransport()
+    _post(transport, hook_event_name="PostToolUseFailure", error="Exit code 1", is_interrupt=False)
+    assert [m["type"] for m in _sent(transport)] == ["resolved"]
+
+
+def test_a_tool_that_comes_back_with_other_input_is_matched_by_chat_and_tool():
+    setup()
+    hook._pending_marker("f" * 20, "s1", "ask-1", "AskUserQuestion")
+    transport = FakeTransport()
+    post = dict(session_id="s1", hook_event_name="PostToolUse", tool_name="AskUserQuestion", cwd="/repo",
+                tool_input={"questions": [{"question": "Which?"}], "answers": {"Which?": "A"}})
+    hook.run_posttool(io.StringIO(json.dumps(post)), "claude", make_link_factory(transport))
+    assert [m["request"] for m in _sent(transport)] == ["ask-1"]
+
+
+def test_no_guessing_with_two_waiting_calls_or_for_shell_commands():
+    setup()
+    hook._pending_marker("a" * 20, "s1", "w-1", "WebFetch")
+    hook._pending_marker("b" * 20, "s1", "w-2", "WebFetch")
+    hook._pending_marker("c" * 20, "s1", "sh-1", "Bash")
+    transport = FakeTransport()
+    for tool, tool_input in (("WebFetch", {"url": "https://x"}), ("Bash", {"command": "something else"})):
+        post = dict(session_id="s1", hook_event_name="PostToolUse", tool_name=tool, cwd="/repo", tool_input=tool_input)
+        hook.run_posttool(io.StringIO(json.dumps(post)), "claude", make_link_factory(transport))
+    assert _sent(transport) == []
+    assert len(list(hook.pending_dir().iterdir())) == 3
+
+
+def test_a_new_task_drops_the_old_cards_of_that_chat_only():
+    """Refused on the PC or interrupted with Esc: no hook reports it, the next prompt shows it is over."""
+    setup()
+    hook._pending_marker("a" * 20, "s1", "r1", "Bash")
+    hook._pending_marker("b" * 20, "s1", "r2", "PowerShell")
+    other = hook._pending_marker("c" * 20, "s2", "r3", "Bash")
+    transport = FakeTransport()
+    start = {"session_id": "s1", "cwd": "/repo", "hook_event_name": "UserPromptSubmit"}
+    hook.run_event(io.StringIO(json.dumps(start)), "claude", "working", make_link_factory(transport))
+    sent = _sent(transport)
+    assert sorted(m["request"] for m in sent if m["type"] == "resolved") == ["r1", "r2"]
+    assert [p.name for p in hook.pending_dir().iterdir()] == [other.name]
+
+
+def test_an_allow_for_a_question_answers_nothing_and_clears_the_card():
+    """AskUserQuestion needs the answer itself: a bare allow from the phone must not reach Claude Code."""
+    setup()
+    out = io.StringIO()
+    question = {"session_id": "s1", "cwd": "/repo", "tool_name": "AskUserQuestion",
+                "tool_input": {"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}]}}
+    transport = phone_answering("allow", "button")
+    assert hook.run(io.StringIO(json.dumps(question)), out, make_link_factory(transport)) == 0
+    assert out.getvalue() == ""  # no allow: the question stays on the PC
+    types = sent_types(transport)
+    assert types[0] == "request" and "resolved" in types  # the card leaves the phone quietly
+    assert not any(hook.pending_dir().iterdir())
+
+
+def test_a_deny_for_a_question_still_denies():
+    setup()
+    out = io.StringIO()
+    question = {"session_id": "s1", "cwd": "/repo", "tool_name": "ExitPlanMode", "tool_input": {"plan": "p"}}
+    hook.run(io.StringIO(json.dumps(question)), out, make_link_factory(phone_answering("deny", "button")))
+    assert json.loads(out.getvalue())["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+
+
+def test_hook_gives_up_quietly_once_its_card_was_dropped():
+    """Claude Code does not kill the hook when the PC dialog is answered; posttool removes the marker."""
+    setup()
+
+    class AnsweredOnPc(FakeTransport):
+        def subscribe(self, topic, since, deadline, on_open=None, stop=None):
+            if on_open:
+                on_open()
+            for marker in list(hook.pending_dir().iterdir()):
+                marker.unlink()  # what posttool does
+            assert stop is not None and stop()
+            return
+            yield
+
+    transport = AnsweredOnPc()
+    assert run_hook(transport) is None
+    assert sent_types(transport) == ["request"]  # no "cancel", no answer, no waiting for half an hour
 
 
 def test_idle_clears_markers_of_that_session():

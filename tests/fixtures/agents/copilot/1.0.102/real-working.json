@@ -1,0 +1,13 @@
+{
+  "agent": "copilot",
+  "agent_version": "1.0.102",
+  "kind": "working",
+  "captured": "2026-10-21",
+  "source": "capture (HORNCALL_CAPTURE=1, values redacted by the hook)",
+  "input": {
+    "sessionId": "<redacted:36>",
+    "timestamp": 1792613545447,
+    "cwd": "<redacted:11>",
+    "prompt": "<redacted:65>"
+  }
+}

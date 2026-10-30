@@ -54,7 +54,8 @@ SENSITIVE_PATH = re.compile(
 
 # Tools we know: anything else (MCP servers, other agents' extras) is judged by the verbs in its name.
 KNOWN_TOOLS = {"Bash", "PowerShell", "Write", "Edit", "MultiEdit", "NotebookEdit", "Read", "Glob", "Grep",
-               "LS", "WebFetch", "WebSearch", "Task", "Agent", "TodoWrite", "NotebookRead"}
+               "LS", "WebFetch", "WebSearch", "Task", "Agent", "TodoWrite", "NotebookRead",
+               "AskUserQuestion", "ExitPlanMode"}
 RISKY_TOOL_WORDS = {
     "delete", "remove", "rm", "drop", "destroy", "purge", "wipe", "truncate", "erase", "kill", "terminate",
     "revoke", "reset", "force", "exec", "execute", "eval", "shell", "command", "deploy", "publish", "push",
@@ -106,12 +107,18 @@ def _is_outside(path: str, cwd: str | None) -> bool:
     if not path or not cwd:
         return False
     try:
-        Path(path).resolve().relative_to(Path(cwd).resolve())
+        # Gemini sends relative paths ("notes.txt"): they are relative to the project, not to this process.
+        Path(cwd, path).resolve().relative_to(Path(cwd).resolve())
         return False
     except ValueError:
         return True
     except OSError:
         return False
+
+
+def tool_words(tool: str) -> set[str]:
+    """The words of a tool name: mcp_github_deleteFile → {mcp, github, delete, file}."""
+    return set(re.findall(r"[a-z]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", tool).lower()))
 
 
 def risk_reasons(tool: str, tool_input: dict, cwd: str | None, patterns: list[str] | None = None) -> list[str]:
@@ -137,8 +144,7 @@ def risk_reasons(tool: str, tool_input: dict, cwd: str | None, patterns: list[st
         if any(SENSITIVE_PATH.search(p.replace("\\", "/")) for p in paths):
             reasons.append("Changes permissions, hooks, CI or secrets")
     elif tool not in KNOWN_TOOLS:
-        words = set(re.findall(r"[a-z]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", tool).lower()))
-        if words & RISKY_TOOL_WORDS:
+        if tool_words(tool) & RISKY_TOOL_WORDS:
             reasons.append(f"Tool may change or delete data ({_short(tool, 40)})")
     return reasons[:4]
 
@@ -189,7 +195,38 @@ def describe(tool: str, tool_input: dict, limit: int) -> tuple[str, str]:
     if tool.startswith("mcp__"):
         _, server, name = (tool.split("__", 2) + ["", ""])[:3]
         return f"MCP {server}: {name}", _short(json.dumps(tool_input, ensure_ascii=False, indent=1), limit)
+    if tool == "AskUserQuestion":
+        return describe_questions(tool_input, limit)
+    if tool == "ExitPlanMode":
+        plan = str(tool_input.get("plan") or "").strip()
+        return "Plan ready for approval", _short(plan or json.dumps(tool_input, ensure_ascii=False, indent=1), limit)
     return tool, _short(json.dumps(tool_input, ensure_ascii=False, indent=1), limit)
+
+
+# Tools whose "allow" cannot be answered from the phone: the agent wants a choice or a plan decision, and
+# Claude Code needs the answer itself (`updatedInput`), which Horncall does not send. The phone shows them
+# readably and offers no approve button; an "allow" that still arrives is dropped by hook.run.
+NEEDS_PC_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
+
+
+def describe_questions(tool_input: dict, limit: int) -> tuple[str, str]:
+    """AskUserQuestion as plain text: the question, then its options (label – description)."""
+    questions = [q for q in (tool_input.get("questions") or []) if isinstance(q, dict)]
+    if not questions:
+        return "Question", _short(json.dumps(tool_input, ensure_ascii=False, indent=1), limit)
+    blocks = []
+    for q in questions:
+        head = f"[{q['header']}] " if q.get("header") else ""
+        lines = [f"{head}{q.get('question', '')}"]
+        for option in q.get("options") or []:
+            if not isinstance(option, dict):
+                continue
+            label, detail = option.get("label", ""), option.get("description", "")
+            lines.append(f" • {label}" + (f" – {detail}" if detail else ""))
+        if q.get("multiSelect"):
+            lines.append(" (several answers allowed)")
+        blocks.append("\n".join(lines))
+    return f"Question: {_short(str(questions[0].get('question', '')), 60)}", _short("\n\n".join(blocks), limit)
 
 
 def build_request(hook_input: dict, device: str, timeout_s: int, limit: int,
@@ -219,6 +256,8 @@ def build_request(hook_input: dict, device: str, timeout_s: int, limit: int,
     }
     if reasons:
         request["reasons"] = reasons
+    if tool in NEEDS_PC_TOOLS:
+        request["needs_pc"] = True  # the phone offers no approve button for these
     description = tool_input.get("description")
     if description:
         request["description"] = _short(str(description), 200)
@@ -240,6 +279,10 @@ def fit_to_budget(request: dict, seal_fn, budget: int = BODY_BUDGET) -> str:
             return body
         preview = request["preview"]
         request = {**request, "preview": _short(preview, int(len(preview) * 0.8))}
+
+
+# "pass" = the phone is muted and has no opinion: the agent asks at the PC (an older plugin ignores it and keeps waiting).
+DECISIONS = ("allow", "deny", "pass")
 
 
 def make_response(request_id: str, decision: str, via: str) -> dict:

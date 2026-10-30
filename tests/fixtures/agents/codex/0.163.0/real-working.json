@@ -1,0 +1,17 @@
+{
+  "agent": "codex",
+  "agent_version": "0.163.0",
+  "kind": "working",
+  "captured": "2026-10-21",
+  "source": "capture (HORNCALL_CAPTURE=1, values redacted by the hook)",
+  "input": {
+    "session_id": "<redacted:36>",
+    "turn_id": "<redacted:36>",
+    "transcript_path": "<redacted:116>",
+    "cwd": "<redacted:11>",
+    "hook_event_name": "UserPromptSubmit",
+    "model": "gpt-6-luna",
+    "permission_mode": "bypassPermissions",
+    "prompt": "<redacted:110>"
+  }
+}

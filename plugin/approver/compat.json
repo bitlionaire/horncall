@@ -1,0 +1,107 @@
+{
+  "_about": "Which agent versions each adapter was written and checked against. Read by tools/agent_versions.py, the hook's capture mode and tests/test_agent_contract.py; procedure in docs/AGENTS.md. Evidence levels: live = allow and deny checked end to end on a phone (what was not checked, e.g. timeout, is said in the note); field-names = real input keys seen in hook.log or a capture, values made up; docs = taken from the documentation only; unit = made-up payloads only.",
+  "reviewed": "2026-10-30",
+  "agents": {
+    "claude": {
+      "title": "Claude Code",
+      "npm": "@anthropic-ai/claude-code",
+      "version_command": ["claude", "--version"],
+      "baseline": {"version": "2.1.306", "evidence": "live", "note": "daily use through the plugin"},
+      "updates": {"mode": "auto", "default_on": true, "opt_out": "env DISABLE_AUTOUPDATER=1 (settings.json env); DISABLE_UPDATES=1 blocks every path", "installs": "native and npm update themselves; Homebrew/WinGet/apt do not", "source": "https://code.claude.com/docs/en/setup", "checked": "2026-10-21"},
+      "support": {"policy": "latest", "floor": "2.1.139", "floor_basis": "checked 2026-10-30 in the changelog: the plugin's hooks.json uses the exec form (`args` array), added in 2.1.139 ('Added hook args: string[] field (exec form)'); PermissionRequest itself exists since 2.0.45 (settings.json installs use the plain command string). Adapter checked on the baseline only", "shapes": []},
+      "docs": {
+        "hooks": "https://code.claude.com/docs/en/hooks",
+        "changelog": "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md"
+      },
+      "config": {"file": "plugin/hooks/hooks.json (plugin) or ~/.claude/settings.json", "env": "CLAUDE_CONFIG_DIR"},
+      "hooks": {
+        "PermissionRequest": {"role": "permission", "matcher": "*", "timeout_s": 1900},
+        "PostToolUse": {"role": "posttool", "matcher": "*", "timeout_s": 15},
+        "PostToolUseFailure": {"role": "posttool", "matcher": "*", "timeout_s": 15},
+        "UserPromptSubmit": {"role": "working", "timeout_s": 15},
+        "Stop": {"role": "idle", "timeout_s": 15}
+      },
+      "input_fields": ["tool_name", "tool_input", "cwd", "session_id", "transcript_path"],
+      "output": {
+        "allow": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}},
+        "deny": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "..."}}}
+      },
+      "no_opinion": "empty stdout, exit 0: Claude shows its own dialog",
+      "watch": ["PermissionRequest", "hookSpecificOutput", "decision", "hook timeout", "plugin hooks.json", "statusLine", "args", "PostToolUseFailure (failed commands do not fire PostToolUse)", "tool_use_id (PostToolUse has it, PermissionRequest does not)", "a PermissionRequest hook keeps running after the dialog is answered", "no hook fires on a manual deny or Esc"]
+    },
+    "gemini": {
+      "title": "Gemini CLI",
+      "npm": "@google/gemini-cli",
+      "version_command": ["gemini", "--version"],
+      "baseline": {"version": "0.64.0", "evidence": "live", "note": "real captures on 0.64.0 (run_shell_command, replace, BeforeAgent, AfterAgent); allow x3 verified live on the phone 2026-10-21 (--yolo); deny verified live 2026-10-30 (file not created). Release notes 0.65-0.66: no hook changes. Not checked live: timeout; MCP tools untested for lack of a server"},
+      "updates": {"mode": "auto", "default_on": true, "opt_out": "settings.json general.enableAutoUpdate=false (notice: general.enableAutoUpdateNotification=false)", "installs": "docs do not distinguish npm/brew/npx", "source": "https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/reference/configuration.md", "checked": "2026-10-21"},
+      "support": {"policy": "latest", "floor": "0.27.0", "floor_basis": "checked 2026-10-22 in the release notes: hooks existed before (0.24.0 has hook folder trust, 0.25.0 the hooks docs), but v0.27.0 'feat(hooks): enable hooks system by default' (PR 17247); older versions need hooksConfig.enabled and would silently not ask the phone. Adapter itself checked on 0.64.0 only", "shapes": []},
+      "docs": {
+        "hooks": "https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/index.md",
+        "changelog": "https://github.com/google-gemini/gemini-cli/releases"
+      },
+      "config": {"file": "~/.gemini/settings.json", "env": "GEMINI_CLI_HOME"},
+      "hooks": {
+        "BeforeTool": {"role": "permission", "matcher": "run_shell_command|write_file|replace|mcp_.*", "timeout_ms": 1900000},
+        "AfterTool": {"role": "posttool", "matcher": "run_shell_command|write_file|replace|mcp_.*", "timeout_ms": 15000},
+        "BeforeAgent": {"role": "working", "timeout_ms": 15000},
+        "AfterAgent": {"role": "idle", "timeout_ms": 15000}
+      },
+      "input_fields": ["tool_name", "tool_input", "cwd", "session_id", "hook_event_name", "transcript_path", "timestamp", "mcp_context", "original_request_name"],
+      "output": {"allow": {"decision": "allow"}, "deny": {"decision": "deny", "reason": "..."}},
+      "no_opinion": "empty stdout, exit 0: Gemini's own approval mode decides (users run gemini --yolo so the phone is the only question)",
+      "watch": ["BeforeTool", "hooksConfig", "decision", "tool names (run_shell_command, write_file, replace)", "MCP tool naming mcp_<server>_<tool> (our matcher mcp_.*; read-only names skip the phone)", "subagent tools", "non-JSON stdout counts as allow", "exit code 2 = block"]
+    },
+    "copilot": {
+      "title": "GitHub Copilot CLI",
+      "npm": "@github/copilot",
+      "version_command": ["copilot", "--version"],
+      "baseline": {"version": "1.0.105", "evidence": "live", "note": "2026-10-30 on 1.0.105 with the owner's phone: powershell deny (file not created, 'denied by the permission hook') and allow (file created); changelog 1.0.103-105 and hooks reference: no hook changes. 2026-10-21 on 1.0.102: powershell allow x3 (shell, file edit, delete) and deny (the folder survived; Copilot read it as a block); compared with the hooks reference page the same day (docs/AGENTS.md section 6). Not checked live: timeout, subagents, postToolUseFailure"},
+      "updates": {"mode": "auto", "default_on": true, "opt_out": "/settings autoUpdate off, ~/.copilot/settings.json autoUpdate=false, or flag --no-auto-update (1.0.85); repo/org settings override", "installs": "docs do not distinguish script/Homebrew/WinGet/npm; `copilot update` updates by hand", "source": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference", "checked": "2026-10-21"},
+      "support": {"policy": "latest", "floor": "1.0.16", "floor_basis": "docs: permissionRequest hook added in 1.0.16 (changelog); input fields between 1.0.16 and the baseline are not verified", "shapes": []},
+      "docs": {
+        "hooks": "https://docs.github.com/en/copilot/reference/hooks-configuration",
+        "about": "https://docs.github.com/en/copilot/concepts/agents/coding-agent/about-hooks",
+        "changelog": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md"
+      },
+      "config": {"file": "~/.copilot/hooks/horncall.json (our own file; bash + powershell keys, `command` would go to PowerShell unquoted)", "env": "COPILOT_HOME"},
+      "hooks": {
+        "permissionRequest": {"role": "permission", "timeout_s": 1900},
+        "userPromptSubmitted": {"role": "working", "timeout_s": 15},
+        "agentStop": {"role": "idle", "timeout_s": 15},
+        "postToolUse": {"role": "posttool", "timeout_s": 15},
+        "postToolUseFailure": {"role": "posttool", "timeout_s": 15}
+      },
+      "input_fields": ["toolName", "toolInput", "cwd", "sessionId", "hookName", "permissionSuggestions", "timestamp", "agentId", "agentType", "parentAgentId", "transcriptPath"],
+      "output": {"allow": {"behavior": "allow"}, "deny": {"behavior": "deny", "message": "..."}},
+      "no_opinion": "empty stdout, exit 0: Copilot asks in the terminal",
+      "watch": ["permissionRequest", "hooks file version", "toolName values (powershell, bash, edit, create)", "toolInput keys (edit sends diff + file_path)", "requestSandboxBypass (an allow doesn't approve it: we stay silent)", "timeoutSec", "exec/args entries", "PascalCase events switch to snake_case payloads", "exit code 2 = deny", "subagents (agentId/parentAgentId)"]
+    },
+    "codex": {
+      "title": "OpenAI Codex CLI",
+      "npm": "@openai/codex",
+      "version_command": ["codex", "--version"],
+      "baseline": {"version": "0.166.0", "evidence": "field-names", "note": "2026-10-30 on 0.166.0 interactive (-s workspace-write -a on-request) with the owner's phone: deny (file outside the workspace not created) and allow x2 verified live; real captures saved (Bash {command, description}, cwd = command dir since 0.166). While the hook waits Codex shows only 'Running hook' and no prompt of its own, so with phone mode on the answer comes from the phone. Not checked live: timeout. Earlier: hook.log 2026-10-16..19 shows two shapes: older {tool_name: shell, command: argv, justification} and newer Claude-like {tool_name: Bash, hook_event_name, permission_mode, turn_id, model}"},
+      "updates": {"mode": "notify", "default_on": true, "opt_out": "config.toml check_for_update_on_startup=false", "installs": "banner shows the upgrade command for npm or Homebrew; no silent self-update found", "source": "https://learn.chatgpt.com/docs/config-file/config-reference", "checked": "2026-10-21"},
+      "support": {"policy": "floor", "floor": "0.163.0", "floor_basis": "checked: the version we last verified; the release that introduced PermissionRequest hooks was not found, so older ones are unconfirmed", "shapes": ["shell with argv list + justification (older)", "Bash with hook_event_name, permission_mode, turn_id, model (newer)", "apply_patch as one text"]},
+      "docs": {
+        "hooks": "https://developers.openai.com/codex/hooks",
+        "changelog": "https://github.com/openai/codex/releases"
+      },
+      "config": {"file": "~/.codex/hooks.json", "env": "CODEX_HOME"},
+      "hooks": {
+        "PermissionRequest": {"role": "permission", "matcher": "*", "timeout_s": 600},
+        "PostToolUse": {"role": "posttool", "matcher": "*", "timeout_s": 15},
+        "UserPromptSubmit": {"role": "working", "timeout_s": 15},
+        "Stop": {"role": "idle", "timeout_s": 15}
+      },
+      "input_fields": ["tool_name", "tool_input", "cwd", "session_id", "hook_event_name", "permission_mode", "transcript_path", "turn_id", "model"],
+      "output": {
+        "allow": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}},
+        "deny": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "..."}}}
+      },
+      "no_opinion": "empty stdout, exit 0: Codex uses its approval policy",
+      "watch": ["hooks.json", "PermissionRequest", "hooks must be trusted again in /hooks after any change to them", "apply_patch", "exec_command / unified_exec", "timeout cap (we keep 600 s)"]
+    }
+  }
+}

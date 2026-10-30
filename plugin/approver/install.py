@@ -128,11 +128,13 @@ def gemini_settings() -> Path:
     return Path(os.environ.get("GEMINI_CLI_HOME") or Path.home() / ".gemini") / "settings.json"
 
 
-GEMINI_MATCHER = "run_shell_command|write_file|replace"
+GEMINI_MATCHER = "run_shell_command|write_file|replace|mcp_.*"  # MCP: agents.Gemini decides which ones
 
 # event → (matcher, command args after the launcher, timeout ms, description)
 GEMINI_HOOKS = {
     "BeforeTool": (GEMINI_MATCHER, "hook gemini", 1_900_000, "Ask the phone (Horncall) before risky tools"),
+    # After a tool ran: a question answered in the terminal leaves the phone at once, not at the end of the task.
+    "AfterTool": (GEMINI_MATCHER, "posttool gemini", 15_000, "Drop the phone card (Horncall) of a question answered here"),
     "BeforeAgent": (None, "event gemini working", 15_000, "Tell the phone (Horncall) a task started"),
     "AfterAgent": (None, "event gemini idle", 15_000, "Tell the phone (Horncall) a task finished"),
 }
@@ -148,7 +150,7 @@ def gemini_definitions() -> dict:
 
 
 def install_gemini() -> Path:
-    # Hooks are on by default since Gemini CLI 0.6x (toggle: hooksConfig.enabled); we don't touch it.
+    # Hooks are on by default since Gemini CLI 0.27.0 (toggle: hooksConfig.enabled); we don't touch it.
     path = gemini_settings()
     _save_json(path, _merge(path, gemini_definitions()))
     return path
@@ -177,8 +179,11 @@ def copilot_hook_file() -> Path:
 
 
 def copilot_file_content() -> dict:
+    # Copilot runs `command` through PowerShell on Windows, where a quoted path (C:\Program Files\…) is just
+    # a string: separate bash / powershell lines, the PowerShell one with the `&` call operator.
     def entry(args: str, timeout: int) -> list:
-        return [{"type": "command", "command": hook_command("copilot", args), "timeoutSec": timeout}]
+        return [{"type": "command", "bash": hook_command("copilot", args),
+                 "powershell": hook_command("copilot", args, powershell=True), "timeoutSec": timeout}]
 
     return {"version": 1, "hooks": {
         "permissionRequest": entry("hook copilot", 1900),
@@ -186,6 +191,7 @@ def copilot_file_content() -> dict:
         "userPromptSubmitted": entry("event copilot working", 15),
         "agentStop": entry("event copilot idle", 15),
         "postToolUse": entry("posttool copilot", 15),
+        "postToolUseFailure": entry("posttool copilot", 15),
     }}
 
 
@@ -209,7 +215,7 @@ def copilot_commands() -> list[str]:
         hooks = _load_json(copilot_hook_file()).get("hooks", {})
     except ValueError:
         return []
-    return [e.get("command", "") for entries in hooks.values() for e in entries or []]
+    return [e.get("powershell") or e.get("bash") or e.get("command", "") for entries in hooks.values() for e in entries or []]
 
 
 def copilot_installed() -> bool:
@@ -224,6 +230,8 @@ def codex_hooks_file() -> Path:
 
 CODEX_HOOKS = {
     "PermissionRequest": ("*", "hook codex", 600),
+    # Also runs after a command that exits non-zero (docs): a question answered in the terminal leaves the phone.
+    "PostToolUse": ("*", "posttool codex", 15),
     "UserPromptSubmit": (None, "event codex working", 15),
     "Stop": (None, "event codex idle", 15),
 }
@@ -332,6 +340,7 @@ def claude_statusline_installed() -> bool:
 CLAUDE_HOOKS = {
     "PermissionRequest": ("*", "hook claude", 1900),
     "PostToolUse": ("*", "posttool claude", 15),
+    "PostToolUseFailure": ("*", "posttool claude", 15),  # a failed command is answered too: the card must go
     "UserPromptSubmit": (None, "event claude working", 15),
     "Stop": (None, "event claude idle", 15),
 }

@@ -1,0 +1,18 @@
+{
+  "agent": "copilot",
+  "agent_version": "1.0.98",
+  "kind": "idle",
+  "captured": "2026-10-16",
+  "source": "hook.log field names, values made up",
+  "input": {
+    "cwd": "D:/repo",
+    "sessionId": "s-copilot",
+    "stopReason": "end_turn",
+    "stop_hook_active": false,
+    "timestamp": 1760600000,
+    "transcriptPath": "C:/Users/u/.copilot/session-state/s-copilot.jsonl"
+  },
+  "expect": {
+    "session": "s-copilot"
+  }
+}

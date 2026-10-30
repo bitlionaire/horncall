@@ -99,7 +99,7 @@ def test_install_claude_adds_the_plugin_hooks_to_settings_and_keeps_the_rest(tmp
     data = json.loads(settings.read_text())
     assert data["model"] == "opus" and set(data["hooks"]) == set(install.CLAUDE_HOOKS)
     assert [h["command"] for e in data["hooks"]["Stop"] for h in e["hooks"]].count(other["command"]) == 1
-    assert len(install.claude_commands()) == 4 and install.state("claude") == "here"
+    assert len(install.claude_commands()) == 5 and install.state("claude") == "here"
     assert "name" not in json.dumps(data["hooks"])  # Claude's settings have no name field for hooks
     install.uninstall_claude()
     assert json.loads(settings.read_text())["hooks"] == {"Stop": [{"hooks": [other]}]}

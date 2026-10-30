@@ -47,6 +47,10 @@ def test_write_outside_cwd_is_danger(tmp_path):
     repo.mkdir()
     assert protocol.rate_risk("Write", {"file_path": str(repo / "a.txt")}, str(repo)) == "normal"
     assert protocol.rate_risk("Write", {"file_path": str(tmp_path / "evil.txt")}, str(repo)) == "danger"
+    # Gemini sends paths relative to the project: inside stays normal, climbing out is danger.
+    assert protocol.rate_risk("Edit", {"file_path": "notes.txt"}, str(repo)) == "normal"
+    assert protocol.rate_risk("Edit", {"file_path": "sub/notes.txt"}, str(repo)) == "normal"
+    assert protocol.rate_risk("Edit", {"file_path": "../evil.txt"}, str(repo)) == "danger"
 
 
 def test_build_request_bash():
@@ -69,6 +73,40 @@ def test_build_request_edit_and_mcp():
     mcp = protocol.build_request({"tool_name": "mcp__github__create_issue",
                                   "tool_input": {"title": "Bug"}}, "PC", 60, 1500)
     assert mcp["title"] == "MCP github: create_issue"
+
+
+QUESTION = {"questions": [
+    {"question": "Which framework?", "header": "Framework", "multiSelect": False,
+     "options": [{"label": "React", "description": "Component library"}, {"label": "Vue", "description": ""}]},
+    {"question": "Which tests?", "options": [{"label": "unit"}, {"label": "e2e"}], "multiSelect": True},
+]}
+
+
+def test_a_question_is_shown_as_text_and_needs_the_pc():
+    req = protocol.build_request({"tool_name": "AskUserQuestion", "tool_input": QUESTION, "cwd": "/r"}, "PC", 60, 1500)
+    assert req["title"] == "Question: Which framework?"
+    assert req["preview"].splitlines()[0] == "[Framework] Which framework?"
+    assert " • React – Component library" in req["preview"] and " • Vue" in req["preview"]
+    assert "several answers allowed" in req["preview"]  # the multi-select question
+    assert "{" not in req["preview"]  # not a JSON dump any more
+    assert req["needs_pc"] is True and req["risk"] == "normal"
+
+
+def test_a_question_without_the_usual_shape_still_shows_something():
+    req = protocol.build_request({"tool_name": "AskUserQuestion", "tool_input": {"odd": 1}, "cwd": "/r"}, "PC", 60, 1500)
+    assert req["title"] == "Question" and "odd" in req["preview"]
+
+
+def test_plan_approval_shows_the_plan_and_needs_the_pc():
+    req = protocol.build_request({"tool_name": "ExitPlanMode", "tool_input": {"plan": "# Plan\n1. do it"}, "cwd": "/r"},
+                                 "PC", 60, 1500)
+    assert req["title"] == "Plan ready for approval" and req["preview"].startswith("# Plan")
+    assert req["needs_pc"] is True
+
+
+def test_ordinary_tools_do_not_need_the_pc():
+    req = protocol.build_request({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": "/r"}, "PC", 60, 1500)
+    assert "needs_pc" not in req
 
 
 def test_fit_to_budget_shrinks_large_preview():

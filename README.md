@@ -7,13 +7,26 @@ This repository is the **PC add-on** (open source, MIT). It hooks into the agent
 hook systems and forwards a permission question to the phone only while you switch it **on**
 (you're away from the desk). At the desk, everything works as before.
 
-- Guide: **https://horncall.bitlionaire.me** · phone app: Android (see the guide)
+- Guide: **https://horncall.bitlionaire.me** · phone app: [Google Play](https://play.google.com/store/apps/details?id=app.horncall) (Android)
 - End-to-end encrypted: AES-256-GCM with a key made on your computer and handed to the phone only by
   QR code. The relay sees ciphertext.
 - The phone **signs every decision** (Android Keystore, ECDSA P-256); the computer accepts only
   answers signed by the phone it paired with. A stolen key file can read orders, but approve nothing.
 - Dangerous commands (`rm -rf`, force push, `DROP TABLE`, edits to secrets, hooks or CI…) get a red
   card with the reasons and need a long press.
+
+## Supported versions
+
+Keep the agents up to date. Horncall supports these versions and newer; older ones are not worked around
+(`horncall setup` and `horncall status` tell you to update). The list lives in
+[`plugin/approver/compat.json`](plugin/approver/compat.json) (`support.floor`).
+
+| Agent | Minimum |
+|---|---|
+| Claude Code | 2.1.139 |
+| Gemini CLI | 0.27.0 |
+| GitHub Copilot CLI | 1.0.16 |
+| OpenAI Codex CLI | 0.163.0 |
 
 ## Install
 
@@ -69,7 +82,7 @@ Remove everything: `horncall uninstall all` (in Claude: `/horncall:approver unin
 | `horncall name "Shop backend"` | label this project's orders on the phone |
 
 Gemini CLI asks on its own first — start it with `gemini --yolo` (same as `--approval-mode yolo`) so only the phone asks.
-Codex CLI: open `/hooks` and enable the three Horncall hooks.
+Codex CLI: open `/hooks` and enable the four Horncall hooks.
 
 ## How it works
 
