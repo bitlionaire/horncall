@@ -151,6 +151,42 @@ def test_task_events_send_working_then_idle_with_duration(monkeypatch, approver_
     assert sent[0]["session"] == sent[1]["session"]
 
 
+def test_late_idle_of_a_dead_session_sends_no_duration(monkeypatch, approver_home):
+    """A session killed mid-task says idle days later (or never): that gap is not work."""
+    from approver.config import Config, State
+    Config(server="https://x", key="AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", device_name="PC").save()
+    State(mode="on").save()
+    sent = []
+
+    class FakeLink:
+        def __init__(self, *a):
+            pass
+
+        def send_status(self, status):
+            sent.append(status)
+
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(hook.time, "time", lambda: now[0])
+    for session, gap in (("s7", 7 * 3600), ("s13", 13 * 3600)):
+        payload = json.dumps({"session_id": session, "cwd": "/r"})
+        hook.run_event(io.StringIO(payload), "claude", "working", link_factory=FakeLink)
+        now[0] += gap
+        hook.run_event(io.StringIO(payload), "claude", "idle", link_factory=FakeLink)
+    idles = [s for s in sent if s["state"] == "idle"]
+    assert len(idles) == 2 and all("worked_s" not in s for s in idles)
+
+
+def test_abandoned_task_starts_are_forgotten_after_12_hours(monkeypatch, approver_home):
+    now = [1_800_000_000]
+    monkeypatch.setattr(hook.time, "time", lambda: now[0])
+    hook.log_path().parent.mkdir(parents=True, exist_ok=True)
+    hook._task_clock("old", "working", now[0])
+    hook._task_clock("new", "working", now[0] + 11 * 3600)
+    hook._task_clock("x", "working", now[0] + 12 * 3600 + 1)
+    tasks = json.loads(hook.log_path().with_name("tasks.json").read_text(encoding="utf-8"))
+    assert "old" not in tasks and {"new", "x"} <= set(tasks)
+
+
 def test_task_events_are_silent_when_off(approver_home):
     sent = []
 

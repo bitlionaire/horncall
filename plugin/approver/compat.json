@@ -1,6 +1,6 @@
 {
   "_about": "Which agent versions each adapter was written and checked against. Read by tools/agent_versions.py, the hook's capture mode and tests/test_agent_contract.py; procedure in docs/AGENTS.md. Evidence levels: live = allow and deny checked end to end on a phone (what was not checked, e.g. timeout, is said in the note); field-names = real input keys seen in hook.log or a capture, values made up; docs = taken from the documentation only; unit = made-up payloads only.",
-  "reviewed": "2026-10-30",
+  "reviewed": "2026-11-01",
   "agents": {
     "claude": {
       "title": "Claude Code",

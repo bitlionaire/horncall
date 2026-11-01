@@ -181,6 +181,10 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
     return 0
 
 
+MAX_TASK_S = 6 * 3600  # longer "tasks" are sessions that died mid-task: no worked_s is sent
+TASK_FORGET_S = 12 * 3600  # task starts older than this are dropped from tasks.json silently
+
+
 def run_event(stdin: TextIO, agent: str, state_name: str, link_factory=Link) -> int:
     """Task start/end hooks (Claude: UserPromptSubmit / Stop): tell the phone the unit's work state.
 
@@ -217,6 +221,10 @@ def run_event(stdin: TextIO, agent: str, state_name: str, link_factory=Link) -> 
         _clear_session_markers(session_id)
     hook_input = {"session_id": session_id, "cwd": raw.get("cwd")}
     worked = now - started if state_name == "idle" and started else None
+    if worked is not None and worked > MAX_TASK_S:
+        # A session killed mid-task never says idle; a late idle would count the whole gap as work.
+        log("worked-capped", agent=adapter.name, worked_s=worked)
+        worked = None
     status = protocol.make_status(hook_input, config.device_name, adapter.name, state_name, now, worked, config.labels)
     unit_vitals = vitals.read(adapter.name, raw)
     if unit_vitals:
@@ -249,7 +257,7 @@ def _task_clock(session_id: str, state_name: str, now: int, transcript: str = ""
             owner = next((k for k, v in tasks.items() if v.get("tr") == transcript), None)
             entry = tasks.pop(owner, None) if owner else None
         started = entry["t"] if entry else None
-    tasks = {k: v for k, v in tasks.items() if now - v["t"] < 24 * 3600}  # forget abandoned sessions
+    tasks = {k: v for k, v in tasks.items() if now - v["t"] < TASK_FORGET_S}  # forget abandoned sessions
     try:
         path.write_text(json.dumps(tasks), encoding="utf-8")
     except OSError:
