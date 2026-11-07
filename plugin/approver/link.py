@@ -34,15 +34,16 @@ class Link:
 
     def request_and_wait(self, request: dict, deadline: float,
                          accept: Callable[[dict], bool] | None = None,
-                         stop: Callable[[], bool] | None = None) -> dict | None:
+                         stop: Callable[[], bool] | None = None, stop_every_s: float | None = None) -> dict | None:
         """Subscribe to responses first, send the request once subscribed, wait for the answer.
 
         `accept` can reject an answer (e.g. not signed by a trusted phone); waiting then goes on.
         `stop` returning True gives up waiting (the question was answered elsewhere): the result is None.
+        `stop_every_s` asks `stop` more often than the default (a click in the PC window should count at once).
         """
         since = int(time.time()) - 5
         on_open = lambda: self.send_request(request)  # noqa: E731
-        for message in self._messages(self.topic_res, since, deadline, on_open, stop):
+        for message in self._messages(self.topic_res, since, deadline, on_open, stop, stop_every_s):
             if message.get("type") == "response" and message.get("id") == request["id"] \
                     and message.get("decision") in protocol.DECISIONS and (accept is None or accept(message)):
                 return message
@@ -61,10 +62,13 @@ class Link:
         self.transport.publish(self.topic_res, crypto.seal(self.key, self.topic_res, response))
 
     # -----------------------------------------------------------------------
-    def _messages(self, topic: str, since: int, deadline: float, on_open=None, stop=None) -> Iterator[dict]:
+    def _messages(self, topic: str, since: int, deadline: float, on_open=None, stop=None,
+                  stop_every_s: float | None = None) -> Iterator[dict]:
         seen: set[str] = set()
         # Transports without a stop check (test doubles) are called as before.
         extra = {"stop": stop} if stop is not None else {}
+        if stop is not None and stop_every_s is not None:
+            extra["stop_check_s"] = stop_every_s
         for body in self.transport.subscribe(topic, since, deadline, on_open, **extra):
             try:
                 message = crypto.open_envelope(self.key, topic, body)

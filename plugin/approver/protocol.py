@@ -18,38 +18,42 @@ BODY_BUDGET = 3900  # leave headroom below the ntfy limit
 
 # (pattern, reason shown on the phone's red card). Case-insensitive, searched in the command text.
 DANGER_RULES: list[tuple[str, str]] = [
-    (r"\brm\s+(-\w*[rRf]\w*\s+)+", "Deletes files (rm -r/-f)"),
-    (r"\brm\b[^\n]*\s--(recursive|force)\b", "Deletes files (rm --recursive/--force)"),
+    # Unix tools are case-sensitive (chmod -R recurses, -r takes read away; git branch -D forces, -d is safe), so
+    # their rules are wrapped in (?-i:...); Windows, PowerShell and SQL stay case-insensitive (GitHub issue #1).
+    (r"(?-i:\brm\s+(-\w*[rRf]\w*\s+)+)", "Deletes files (rm -r/-f)"),
+    (r"(?-i:\brm\b[^\n]*\s--(recursive|force)\b)", "Deletes files (rm --recursive/--force)"),
     (r"\b(rd|rmdir|del|erase)\b[^\n]*\s/[sq]\b", "Deletes files (Windows /s /q)"),
     (r"\b(Remove-Item|ri)\b[^\n]*\s-r(ecurse)?\b", "Deletes folders recursively (PowerShell)"),
-    (r"\bfind\b[^\n]*\s-delete\b|\bfind\b[^\n]*-exec\s+rm\b|\bxargs\s+rm\b|\bshred\b", "Deletes files in bulk"),
-    (r"\bgit\s+push\b[^\n]*(--force\b|\s-f\b|--force-with-lease\b|\s\+\S)", "Force push: rewrites history on the server"),
-    (r"\bgit\s+push\b[^\n]*(--delete\b|\s:\S)", "Deletes a branch or tag on the server"),
-    (r"\bgit\s+reset\s+--hard\b", "Discards uncommitted work (reset --hard)"),
-    (r"\bgit\s+clean\b[^\n]*(\s-\w*f|--force)", "Deletes untracked files (git clean)"),
-    (r"\bgit\s+branch\b[^\n]*(\s-D\b|--delete\b[^\n]*--force)", "Deletes a branch with unmerged work"),
-    (r"\bgit\s+(checkout\s+--|restore)\s+[.*](\s|$)", "Discards all local changes"),
-    (r"\bgit\s+stash\s+(clear|drop)\b", "Deletes stashed work"),
+    (r"(?-i:\bfind\b[^\n]*\s-delete\b|\bfind\b[^\n]*-exec\s+rm\b|\bxargs\s+rm\b|\bshred\b)", "Deletes files in bulk"),
+    (r"(?-i:\bgit\s+push\b[^\n]*(--force\b|\s-f\b|--force-with-lease\b|\s\+\S))", "Force push: rewrites history on the server"),
+    (r"(?-i:\bgit\s+push\b[^\n]*(--delete\b|\s:\S))", "Deletes a branch or tag on the server"),
+    (r"(?-i:\bgit\s+reset\s+--hard\b)", "Discards uncommitted work (reset --hard)"),
+    (r"(?-i:\bgit\s+clean\b[^\n]*(\s-\w*f|--force))", "Deletes untracked files (git clean)"),
+    # A delete (-d, --delete, or -D) plus a force (-f, --force, or -D), in any order or cluster: -D, -d -f, -fd, --delete --force.
+    (r"(?-i:\bgit\s+branch\b(?=[^\n]*\s(--delete|-[A-Za-z]*[dD][A-Za-z]*)(\s|$))(?=[^\n]*\s(--force|-[A-Za-z]*[fD][A-Za-z]*)(\s|$)))",
+     "Deletes a branch with unmerged work"),
+    (r"(?-i:\bgit\s+(checkout\s+--|restore)\s+[.*](\s|$))", "Discards all local changes"),
+    (r"(?-i:\bgit\s+stash\s+(clear|drop)\b)", "Deletes stashed work"),
     (r"\b(drop|truncate)\s+(table|database|schema|index|user|view|function)\b|\btruncate\s+\w", "Deletes database objects or data"),
     (r"\bdelete\s+from\b(?![^\n]*\bwhere\b)", "Deletes all rows (DELETE without WHERE)"),
     (r"\bupdate\s+\w+\s+set\b(?![^\n]*\bwhere\b)", "Changes all rows (UPDATE without WHERE)"),
     (r"\bmkfs\b|\bformat\s+[a-z]:|\b(Format-Volume|Clear-Disk|Initialize-Disk|diskpart)\b", "Formats or wipes a disk"),
     (r"\bdd\s+if=|>\s*/dev/(sd|nvme|hd)", "Writes raw data to a disk"),
-    (r"\bchmod\b[^\n]*(-R\b[^\n]*\b777\b|\b777\b[^\n]*-R\b)|\bchown\s+-R\b", "Changes permissions recursively"),
+    (r"(?-i:\bchmod\b[^\n]*(\s-R\b[^\n]*\b777\b|\b777\b[^\n]*\s-R\b)|\bchown\s+-R\b)", "Changes permissions recursively"),
     (r"\b(shutdown|reboot|Stop-Computer|Restart-Computer)\b", "Shuts down or restarts the computer"),
     (r"\breg\s+delete\b|\bSet-ExecutionPolicy\b", "Changes system settings"),
-    (r"\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?((ba|z)?sh|python3?)\b", "Runs a script downloaded from the internet"),
+    (r"(?-i:\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?((ba|z)?sh|python3?)\b)", "Runs a script downloaded from the internet"),
     (r"\b(iex|Invoke-Expression)\b", "Runs code from a string (Invoke-Expression)"),
-    (r"\b(npm\s+(publish|unpublish)|twine\s+upload|gh\s+repo\s+delete)\b", "Publishes or deletes a public package/repo"),
-    (r"\b(kubectl\s+delete|terraform\s+(destroy|apply\s+-auto-approve)|helm\s+(uninstall|delete)|docker\s+(system\s+prune|rm\s+-f))\b", "Destroys infrastructure or containers"),
-    (r"\baws\s+s3\s+(rm|rb)\b[^\n]*--recursive", "Deletes cloud storage"),
+    (r"(?-i:\b(npm\s+(publish|unpublish)|twine\s+upload|gh\s+repo\s+delete)\b)", "Publishes or deletes a public package/repo"),
+    (r"(?-i:\b(kubectl\s+delete|terraform\s+(destroy|apply\s+-auto-approve)|helm\s+(uninstall|delete)|docker\s+(system\s+prune|rm\s+-f))\b)", "Destroys infrastructure or containers"),
+    (r"(?-i:\baws\s+s3\s+(rm|rb)\b[^\n]*--recursive)", "Deletes cloud storage"),
 ]
 DEFAULT_DANGER_PATTERNS = [pattern for pattern, _ in DANGER_RULES]
 
 # Files whose change can switch off safety (Claude's own permissions, hooks, CI, secrets).
 SENSITIVE_PATH = re.compile(
     r"(^|/)(\.claude/settings[^/]*\.json|\.mcp\.json|\.git/(hooks/|config$)|\.github/workflows/|\.env[^/]*$"
-    r"|\.gemini/settings[^/]*\.json|\.copilot/(hooks/|config\.json$|mcp-config\.json$)|\.codex/(hooks\.json|config\.toml)$)",
+    r"|\.gemini/settings[^/]*\.json|\.codebuddy/settings[^/]*\.json|crush/crushrc$|opencode/(plugins/|opencode\.jsonc?$)|\.copilot/(hooks/|config\.json$|mcp-config\.json$)|\.codex/(hooks\.json|config\.toml)$)",
     re.IGNORECASE)
 
 # Tools we know: anything else (MCP servers, other agents' extras) is judged by the verbs in its name.
@@ -74,10 +78,14 @@ NAMES = ["Ironjaw", "Stonefist", "Quickblade", "Redbeard", "Ashbringer", "Grimto
 # Each AI is a faction with its own ranks, so the barracks show at a glance who asks.
 # Claude keeps the original list: existing chats keep their names.
 FACTION_RANKS = {
-    "claude": RANKS,
-    "gemini": ["Mage", "Seer", "Arcanist", "Oracle", "Warlock", "Druid", "Enchanter", "Runecaster"],
+    # Each faction after its AI's character or brand (asked Codex, Gemini and Copilot, 2026-11-05).
+    "claude": ["Scribe", "Scholar", "Editor", "Curator", "Archivist", "Chronicler", "Reviewer", "Lorekeeper"],
+    "gemini": ["Stargazer", "Astromancer", "Seer", "Oracle", "Comet", "Nova", "Pulsar", "Starwarden"],
     "copilot": ["Pilot", "Navigator", "Gunner", "Wingman", "Aviator", "Spotter", "Bombardier", "Skyguard"],
-    "codex": ["Engineer", "Sapper", "Mechanic", "Tinker", "Artificer", "Machinist", "Welder", "Gearwright"],
+    "codex": ["Tinker", "Welder", "Mechanic", "Machinist", "Engineer", "Artificer", "Gearwright", "Forgemaster"],
+    "opencode": ["Node", "Peer", "Sysop", "Root", "Daemon", "Kernelist", "Patcher", "Forker"],
+    "crush": ["Corsair", "Buccaneer", "Deckhand", "Boatswain", "Quartermaster", "Swabbie", "Lookout", "Harpooner"],
+    "codebuddy": ["Tamer", "Falconer", "Houndmaster", "Wrangler", "Packleader", "Beastcaller", "Trapper", "Herder"],
 }
 
 

@@ -79,6 +79,13 @@ class Config:
     # unsigned grace period as for pairings from before 0.5.5). New Config() objects get True;
     # configs saved by older plugins load without the key, so the default for loading is False.
     signed_only: bool = True
+    # Opt-in: a task end also sends the start of the AI's last answer (encrypted, cut short; see reply.py).
+    send_replies: bool = False
+    # Codex, Gemini, Copilot hide their own prompt while our hook waits: show the order in a window on the PC too.
+    pc_dialog: bool = True
+    # Where no PC window can open (SSH, no desktop), how long those agents wait for the phone before asking in the
+    # terminal themselves. 0 = phone only, for the whole timeout_s.
+    noscreen_wait_s: int = 120
 
     @classmethod
     def load(cls) -> "Config | None":
@@ -104,12 +111,15 @@ class State:
     mode: str = "off"  # "on" = forward requests to the phone
     on_until: float | None = None  # unix time after which mode falls back to "off"
     on_since: float | None = None  # when the mode was switched on
+    # "Off duty for 2 h" from the PC window: this PC sends nothing to the phone until then, then duty resumes by itself.
+    paused_until: float | None = None
 
     @classmethod
     def load(cls) -> "State":
         try:
             data = json.loads(state_path().read_text(encoding="utf-8"))
-            return cls(mode=data.get("mode", "off"), on_until=data.get("on_until"), on_since=data.get("on_since"))
+            return cls(mode=data.get("mode", "off"), on_until=data.get("on_until"), on_since=data.get("on_since"),
+                       paused_until=data.get("paused_until"))
         except (OSError, ValueError):
             return cls()
 
@@ -119,7 +129,10 @@ class State:
     def is_on(self, now: float | None = None) -> bool:
         if self.mode != "on":
             return False
-        return self.on_until is None or (now or time.time()) < self.on_until
+        now = now or time.time()
+        if (self.paused_until or 0) > now:
+            return False
+        return self.on_until is None or now < self.on_until
 
 
 def _write_private(path: Path, text: str) -> None:

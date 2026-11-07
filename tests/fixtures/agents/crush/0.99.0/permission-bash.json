@@ -1,0 +1,26 @@
+{
+  "agent": "crush",
+  "agent_version": "0.99.0",
+  "kind": "permission",
+  "captured": "2026-11-05",
+  "source": "docs field names, values made up",
+  "input": {
+    "event": "PreToolUse",
+    "hook_event_name": "PreToolUse",
+    "session_id": "s-crush",
+    "cwd": "D:/repo",
+    "tool_name": "bash",
+    "tool_input": {
+      "command": "npm test",
+      "description": "Run the tests"
+    },
+    "tool_use_id": "call_01"
+  },
+  "expect": {
+    "tool": "Bash",
+    "nonempty": [
+      "command"
+    ],
+    "session": "s-crush"
+  }
+}

@@ -50,7 +50,7 @@ class Ntfy:
 
     def subscribe(self, topic: str, since: int | str, deadline: float,
                   on_open: Callable[[], None] | None = None,
-                  stop: Callable[[], bool] | None = None) -> Iterator[str]:
+                  stop: Callable[[], bool] | None = None, stop_check_s: float = STOP_CHECK_S) -> Iterator[str]:
         """Yield message bodies from `topic` until `deadline` (unix time). Reconnects on errors.
 
         `on_open` runs once, when the server confirms the first subscription. Publish anything you
@@ -69,7 +69,7 @@ class Ntfy:
                                          headers={"User-Agent": USER_AGENT})
             remaining = deadline - time.time()
             # With a stop check the read times out sooner (and reconnects from the cursor), so it gets asked.
-            patience = STOP_CHECK_S if stop is not None else KEEPALIVE_SLACK_S
+            patience = stop_check_s if stop is not None else KEEPALIVE_SLACK_S
             _debug("subscribe", topic, "since", cursor)
             try:
                 with urllib.request.urlopen(req, timeout=min(remaining, patience) + 1) as resp:

@@ -1,0 +1,27 @@
+{
+  "agent": "codebuddy",
+  "agent_version": "2.180.0",
+  "kind": "permission",
+  "captured": "2026-11-05",
+  "source": "docs and npm bundle field names, values made up",
+  "input": {
+    "session_id": "s-codebuddy",
+    "transcript_path": "C:/Users/u/.codebuddy/projects/x/s.jsonl",
+    "cwd": "D:/repo",
+    "hook_event_name": "PermissionRequest",
+    "tool_name": "Bash",
+    "tool_use_id": "toolu_1",
+    "tool_input": {
+      "command": "npm test",
+      "description": "Run the tests"
+    },
+    "permission_suggestions": []
+  },
+  "expect": {
+    "tool": "Bash",
+    "nonempty": [
+      "command"
+    ],
+    "session": "s-codebuddy"
+  }
+}

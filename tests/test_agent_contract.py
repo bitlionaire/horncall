@@ -153,7 +153,9 @@ def test_status_warns_about_an_agent_below_its_floor(monkeypatch, capsys):
 
 # The agents' own config files: an AI editing them could switch the phone off.
 CONFIG_FILES = {"claude": "/u/.claude/settings.json", "gemini": "/u/.gemini/settings.json",
-                "copilot": "/u/.copilot/hooks/horncall.json", "codex": "/u/.codex/hooks.json"}
+                "copilot": "/u/.copilot/hooks/horncall.json", "codex": "/u/.codex/hooks.json",
+                "codebuddy": "/u/.codebuddy/settings.json", "crush": "/u/.config/crush/crushrc",
+                "opencode": "/u/.config/opencode/plugins/horncall.ts"}
 
 
 def test_agent_config_files_are_sensitive():

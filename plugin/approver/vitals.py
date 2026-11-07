@@ -5,7 +5,9 @@ conversation. Every reader looks at the END of a file only and returns None on a
 missing bar on the phone is better than a wrong one, and nothing here may slow down or break a hook.
 
 Shape sent to the phone (all keys optional):
-    {"plan_left": 97, "plan_window": "5h", "plan_resets": 1794777480, "ctx_left": 52, "exhausted": true}
+    {"plan_left": 97, "plan_window": "5h", "plan_resets": 1794777480, "ctx_left": 52, "exhausted": true,
+     "plans": [{"window": "5h", "left": 97, "resets": 1794777480}, {"window": "7d", "left": 83, "resets": ...}]}
+    (plans only when there are two windows; plan_* = the tighter one, for apps before 0.7.0)
 """
 
 from __future__ import annotations
@@ -66,6 +68,15 @@ def window_label(minutes: float | None) -> str | None:
     return f"{round(minutes / 60)}h"
 
 
+def _plans(windows) -> list[dict] | None:
+    """Every limit window, shortest first (apps 0.7.0+ draw one bar each; older ones read plan_left = the tighter)."""
+    order = {"5h": 0, "7d": 1}
+    plans = [{"window": label, "left": max(0, round(100 - used)), "resets": resets}
+             for label, used, resets in windows if label]
+    plans = [{k: v for k, v in p.items() if v is not None} for p in sorted(plans, key=lambda p: order.get(p["window"], 2))]
+    return plans if len(plans) > 1 else None  # one window: plan_left says it all
+
+
 def _clean(v: dict) -> dict | None:
     v = {k: x for k, x in v.items() if x is not None}
     return v or None
@@ -87,6 +98,8 @@ def codex(raw: dict) -> dict | None:
         tight = max(windows, key=lambda w: w["used_percent"])
         vitals.update(plan_left=max(0, round(100 - tight["used_percent"])),
                       plan_window=window_label(tight.get("window_minutes")), plan_resets=tight.get("resets_at"))
+        vitals["plans"] = _plans((window_label(w.get("window_minutes")), w["used_percent"], w.get("resets_at"))
+                                 for w in windows)
     if limits.get("rate_limit_reached_type"):
         vitals.update(plan_left=0, exhausted=True)
     return _clean(vitals)
@@ -98,21 +111,24 @@ def copilot(raw: dict) -> dict | None:
     session = raw.get("sessionId") or raw.get("session_id")
     if not session or any(c in str(session) for c in "/\\."):
         return None
-    home = Path(os.environ.get("COPILOT_HOME") or Path.home() / ".copilot")
-    events = home / "session-state" / str(session) / "events.jsonl"
+    events = copilot_events(session)
+    lines = tail_lines(events)
+    # Prompt size of the last model call against the model's prompt limit.
+    usage = ((_last_json(lines, '"session.usage_record"') or {}).get("data") or {}).get("usage") or {}
+    vitals = {"ctx_left": _pct_left(usage.get("inputTokens", 0), usage.get("maxPromptTokens", 0)) if usage else None}
     # Quota comes with model calls, which can sit far from the end of a long session file.
-    event = _last_json(tail_lines(events), '"quotaSnapshots"') or _last_matching_line(events, '"quotaSnapshots"')
-    if not event:
-        return None
-    snapshots = _find_key(event, "quotaSnapshots") or {}
-    chat = snapshots.get("chat") or {}
-    if chat.get("isUnlimitedEntitlement") or not chat.get("entitlementRequests"):
-        return None
+    event = _last_json(lines, '"quotaSnapshots"') or _last_matching_line(events, '"quotaSnapshots"')
+    chat = (_find_key(event, "quotaSnapshots") or {}).get("chat") or {} if event else {}
     left = chat.get("remainingPercentage")
-    if not isinstance(left, (int, float)):
-        return None
-    return _clean({"plan_left": max(0, min(100, round(left))), "plan_window": "month",
-                   "plan_resets": _iso_to_unix(chat.get("resetDate")), "exhausted": True if left <= 0 else None})
+    if not chat.get("isUnlimitedEntitlement") and chat.get("entitlementRequests") and isinstance(left, (int, float)):
+        vitals.update(plan_left=max(0, min(100, round(left))), plan_window="month",
+                      plan_resets=_iso_to_unix(chat.get("resetDate")), exhausted=True if left <= 0 else None)
+    return _clean(vitals)
+
+
+def copilot_events(session) -> Path:
+    home = Path(os.environ.get("COPILOT_HOME") or Path.home() / ".copilot")
+    return home / "session-state" / str(session) / "events.jsonl"
 
 
 def _last_matching_line(path: Path, needle: str, max_bytes: int = 32 * 1024 * 1024) -> dict | None:
@@ -206,6 +222,7 @@ def claude(raw: dict) -> dict | None:
             label, tight = max(windows, key=lambda nw: nw[1]["used_percentage"])
             vitals.update(plan_left=max(0, round(100 - tight["used_percentage"])), plan_window=label,
                           plan_resets=tight.get("resets_at"))
+            vitals["plans"] = _plans((name, w["used_percentage"], w.get("resets_at")) for name, w in windows)
         if isinstance(status.get("ctx_left"), (int, float)) and time.time() - status.get("t", 0) < 600:
             vitals["ctx_left"] = round(status["ctx_left"])
     if "ctx_left" not in vitals:
@@ -218,10 +235,49 @@ def claude(raw: dict) -> dict | None:
             model = str(((entry or {}).get("message") or {}).get("model", ""))
             window = 1_000_000 if "[1m]" in model or used > CLAUDE_WINDOW else CLAUDE_WINDOW
             vitals["ctx_left"] = _pct_left(used, window)
+    if "plan_left" not in vitals:
+        vitals.update(_claude_limit_hit(tail_lines(raw.get("transcript_path"))) or {})
     return _clean(vitals)
 
 
-READERS = {"claude": claude, "codex": codex, "copilot": copilot, "gemini": gemini}
+CLAUDE_WINDOWS = {"five_hour": "5h", "seven_day": "7d"}
+
+
+def _claude_limit_hit(lines: list[str]) -> dict | None:
+    """Without our status line (the VS Code extension runs none) the chat file still tells when a limit was hit: a
+    rejected reply carries apiErrorParams.rate_limit_info. Only while it is the newest reply and not yet reset."""
+    for line in reversed(lines):
+        if '"rate_limit_info"' not in line and '"usage"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        info = (entry.get("apiErrorParams") or {}).get("rate_limit_info") if isinstance(entry, dict) else None
+        if not isinstance(info, dict):
+            return None  # a normal reply came after it: the limit is fine again
+        resets = info.get("resetsAt")
+        if info.get("status") != "rejected" or not isinstance(resets, (int, float)) or resets <= time.time():
+            return None
+        return {"plan_left": 0, "exhausted": True, "plan_resets": int(resets),
+                "plan_window": CLAUDE_WINDOWS.get(str(info.get("rateLimitType")))}
+    return None
+
+
+def codebuddy(raw: dict) -> dict | None:
+    return None  # its chat file's format is not checked yet: no bar rather than a wrong one
+
+
+def crush(raw: dict) -> dict | None:
+    return None  # nothing local found yet for its plan limit or chat memory
+
+
+def opencode(raw: dict) -> dict | None:
+    return None  # its session state lives in its server, not in a file we read
+
+
+READERS = {"claude": claude, "codex": codex, "copilot": copilot, "gemini": gemini, "codebuddy": codebuddy, "crush": crush,
+           "opencode": opencode}
 
 
 def read(agent: str, raw: dict) -> dict | None:

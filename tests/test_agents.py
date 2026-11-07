@@ -89,8 +89,133 @@ def test_install_codex_hooks_json(tmp_path, monkeypatch):
     assert "event codex idle" in data["hooks"]["Stop"][0]["hooks"][0]["command"]
     # After a command (also a failed one) the card must leave the phone: Codex's PostToolUse runs for both.
     assert "posttool codex" in data["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-    assert len(install.codex_commands()) == 4
+    # Its questions need no approval: only PreToolUse sees them.
+    assert data["hooks"]["PreToolUse"][0]["matcher"] == "request_user_input|request_user_input_async"
+    assert len(install.codex_commands()) == 5
     assert install.codex_installed() and install.uninstall_codex() and not install.codex_installed()
+
+
+def test_install_codebuddy_settings_keeps_the_users_own(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEBUDDY_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text(json.dumps({"model": "x", "hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "mine.sh"}]}]}}))
+    install.install_codebuddy()
+    data = json.loads((tmp_path / "settings.json").read_text())
+    assert data["model"] == "x" and data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "mine.sh"
+    assert "hook codebuddy" in data["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
+    assert data["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] == 1900
+    assert "\\" not in data["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]  # Git Bash eats backslashes
+    assert len(install.codebuddy_commands()) == 4
+    assert install.uninstall_codebuddy() and not install.codebuddy_installed()
+    assert json.loads((tmp_path / "settings.json").read_text())["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "mine.sh"
+
+
+def test_codebuddy_speaks_claudes_format():
+    hi = agents.get("codebuddy").parse({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": "/r", "session_id": "s"})
+    assert hi.tool == "Bash" and hi.tool_input["command"] == "ls"
+    assert agents.get("codebuddy").allow() == agents.get("claude").allow()
+    assert protocol.codename("s", "codebuddy").split()[0] in protocol.FACTION_RANKS["codebuddy"]
+
+
+def test_install_crush_keeps_the_users_lines_and_quotes_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    rc = tmp_path / "crush" / "crushrc"
+    rc.parent.mkdir()
+    rc.write_text("permissions allow view\n", encoding="utf-8")
+    install.install_crush()
+    install.install_crush()  # twice: still one block
+    text = rc.read_text(encoding="utf-8")
+    assert text.startswith("permissions allow view\n") and text.count(install.CRUSH_BEGIN) == 1
+    line = next(l for l in text.splitlines() if l.startswith("hook add PreToolUse"))
+    assert "--timeout 1900" in line and "--matcher '^(bash|edit" in line
+    command = install.crush_commands()[0]
+    assert "\\" not in command and command.startswith("'") and command.endswith("hook crush")  # Crush's shell eats backslashes
+    assert len(install.crush_commands()) == 5 and install.state("crush") == "here"
+    assert install.uninstall_crush() and rc.read_text(encoding="utf-8") == "permissions allow view\n"
+    assert not install.crush_installed()
+
+
+def test_crush_adapter_names_tools_and_leaves_reads_alone():
+    crush = agents.get("crush")
+    hi = crush.parse({"tool_name": "bash", "tool_input": {"command": "rm -rf build"}, "cwd": "/r", "session_id": "s"})
+    assert hi.tool == "Bash" and hi.tool_input["command"] == "rm -rf build"
+    assert crush.parse({"tool_name": "edit", "tool_input": {"file_path": "a.py", "old_string": "a", "new_string": "b"},
+                        "session_id": "s"}).tool == "Edit"
+    assert crush.parse({"tool_name": "view", "tool_input": {"file_path": "a.py"}, "session_id": "s"}) is None
+    q = crush.parse({"tool_name": "question", "session_id": "s", "tool_input": {"questions": [
+        {"label": "DB", "type": "single_choice", "question": "Which?", "choices": [{"id": "1", "label": "SQLite"}]}]}})
+    assert q.tool == "AskUserQuestion" and q.notify_only and not q.answered_later
+    assert q.tool_input["questions"][0] == {"header": "DB", "question": "Which?", "options": [{"id": "1", "label": "SQLite"}]}
+    assert crush.allow() == {"decision": "allow"} and crush.deny("no") == {"decision": "deny", "reason": "no"}
+
+
+def test_install_opencode_plugin_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path))
+    path = install.install_opencode()
+    assert path == tmp_path / "plugins" / "horncall.ts"
+    text = path.read_text(encoding="utf-8")
+    assert install.OPENCODE_PLACEHOLDER not in text and 'id: "horncall"' in text
+    command = json.loads(text.split("const COMMAND: string[] = ", 1)[1].split(" //", 1)[0])
+    assert command[-1].endswith("approver_launcher.py")
+    assert install.opencode_commands()[0].endswith("approver_launcher.py hook opencode")
+    assert install.state("opencode") == "here"
+    assert install.uninstall_opencode() and not path.exists() and not install.uninstall_opencode()
+
+
+def test_opencode_adapter_reads_the_plugins_requests():
+    oc = agents.get("opencode")
+    shell = oc.parse({"tool_name": "shell", "session_id": "s", "cwd": "/r",
+                      "tool_input": {"resources": ["git push --force"], "metadata": {}}})
+    assert shell.tool == "Bash" and shell.tool_input == {"command": "git push --force"}
+    edit = oc.parse({"tool_name": "edit", "session_id": "s", "tool_input": {"resources": ["note.txt"], "metadata": {
+        "files": [{"file": "D:/r/note.txt", "patch": "@@ -1 +1 @@\n-a\n+b", "status": "modified"}]}}})
+    assert edit.tool == "Edit" and edit.tool_input["file_path"] == "D:/r/note.txt" and "+b" in edit.tool_input["new_string"]
+    assert oc.parse({"tool_name": "external_directory", "session_id": "s",
+                     "tool_input": {"resources": ["C:/other/**"]}}).tool == "external_directory"
+    assert not oc.blocks_own_prompt  # opencode keeps its question open: no PC window
+    assert oc.allow() == {"decision": "allow"}
+
+
+def _codex_question_run(approver_home, tool, tool_input):
+    from approver.config import Config, State
+    Config(server="https://x", key="AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", device_name="PC").save()
+    State(mode="on").save()
+    sent = []
+
+    class FakeLink:
+        def __init__(self, *a):
+            pass
+
+        def send_request(self, request):
+            sent.append(request)
+
+        def request_and_wait(self, *a, **k):
+            raise AssertionError("a Codex question must not wait for the phone")
+
+    out = io.StringIO()
+    raw = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input, "cwd": "/r/kb",
+           "session_id": "s-q", "turn_id": "t"}
+    assert hook.run(io.StringIO(json.dumps(raw)), out, link_factory=FakeLink, agent="codex") == 0
+    return sent, out.getvalue()
+
+
+def test_codex_async_question_goes_to_the_phone_without_waiting(approver_home):
+    sent, out = _codex_question_run(approver_home, "request_user_input_async", {"questions": [
+        {"title": "Czy zatwierdzasz dodanie plików podglądu?", "options": ["Tak, zatwierdzam", "Tylko wersja tymczasowa"]}]})
+    assert out == ""  # no opinion: Codex shows the question at once
+    card = sent[0]
+    assert card["tool"] == "AskUserQuestion" and card["needs_pc"] and card["answered_later"]
+    assert card["title"].startswith("Question: Czy zatwierdzasz") and "• Tylko wersja tymczasowa" in card["preview"]
+    assert card["expires_at"] - card["ts"] == 1800
+    assert not list((approver_home / "pending").glob("*"))  # answered later: the next "working" takes it off
+
+
+def test_codex_sync_question_card_leaves_when_the_tool_returns(approver_home):
+    sent, out = _codex_question_run(approver_home, "request_user_input", {"questions": [
+        {"id": "db", "header": "Baza", "question": "Którą bazę?", "options": [{"label": "SQLite", "description": "prosto"}]}]})
+    assert out == "" and "answered_later" not in sent[0]
+    assert "[Baza] Którą bazę?" in sent[0]["preview"] and "SQLite – prosto" in sent[0]["preview"]
+    assert len(list((approver_home / "pending").glob("*"))) == 1  # PostToolUse finds it after the answer
 
 
 def test_claude_adapter_keeps_the_old_answer_shape():
@@ -149,6 +274,33 @@ def test_task_events_send_working_then_idle_with_duration(monkeypatch, approver_
     assert [s["state"] for s in sent] == ["working", "idle"]
     assert sent[1]["worked_s"] == 180 and sent[1]["project"] == "app" and sent[1]["type"] == "status"
     assert sent[0]["session"] == sent[1]["session"]
+
+
+def test_idle_sends_the_answer_only_when_replies_are_on(tmp_path, approver_home):
+    from approver.config import Config, State
+    config = Config(server="https://x", key="AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", device_name="PC")
+    config.save()
+    State(mode="on").save()
+    sent = []
+
+    class FakeLink:
+        def __init__(self, *a):
+            pass
+
+        def send_status(self, status):
+            sent.append(status)
+
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "Gotowe, testy przechodzą."}]}}) + "\n", encoding="utf-8")
+    payload = json.dumps({"session_id": "s7", "cwd": "/repo/app", "transcript_path": str(transcript)})
+    hook.run_event(io.StringIO(payload), "claude", "idle", link_factory=FakeLink)
+    config.send_replies = True
+    config.save()
+    hook.run_event(io.StringIO(payload), "claude", "working", link_factory=FakeLink)
+    hook.run_event(io.StringIO(payload), "claude", "idle", link_factory=FakeLink)
+    assert "reply" not in sent[0] and "reply" not in sent[1]
+    assert sent[2]["reply"] == "Gotowe, testy przechodzą."
 
 
 def test_late_idle_of_a_dead_session_sends_no_duration(monkeypatch, approver_home):

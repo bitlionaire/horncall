@@ -11,4 +11,5 @@ def approver_home(tmp_path, monkeypatch):
     from approver import compat
     monkeypatch.setenv("HORNCALL_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(compat, "installed_version", lambda spec: None)  # no real CLIs in tests
+    monkeypatch.setenv("HORNCALL_NO_PC_DIALOG", "1")  # no real windows; test_pcdialog.py fakes one
     return tmp_path / "home"

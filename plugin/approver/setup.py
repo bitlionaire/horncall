@@ -121,7 +121,13 @@ def detect_tools() -> list[Tool]:
         Tool("copilot", "GitHub Copilot CLI", _found("copilot", ".copilot"), install.state("copilot"), _files("copilot"),
              hook("copilot", "Copilot CLI: hooked up — restart it")),
         Tool("codex", "OpenAI Codex CLI", _found("codex", ".codex"), install.state("codex"), _files("codex"),
-             hook("codex", "Codex CLI: hooked up — in Codex open /hooks and switch the 4 Horncall hooks on")),
+             hook("codex", "Codex CLI: hooked up — in Codex open /hooks and switch the 5 Horncall hooks on")),
+        Tool("opencode", "opencode", _found("opencode", ".config/opencode"), install.state("opencode"), _files("opencode"),
+             hook("opencode", "opencode: plugin added — restart it (it mirrors the questions opencode asks by its own rules)")),
+        Tool("crush", "Crush", _found("crush", ".config/crush"), install.state("crush"), _files("crush"),
+             hook("crush", "Crush: hooked up — restart it")),
+        Tool("codebuddy", "CodeBuddy Code", _found("codebuddy", ".codebuddy"), install.state("codebuddy"), _files("codebuddy"),
+             hook("codebuddy", "CodeBuddy Code: hooked up — restart it and approve the Horncall hooks in /hooks")),
     ]
 
 
@@ -156,7 +162,7 @@ h1{{color:#FFC857;letter-spacing:.08em}}</style>
 <h1>HORNCALL</h1><p>Open Horncall on the phone → <b>Scan QR</b> (Polish: <b>Skanuj QR</b>) → scan this code.</p>
 <div class="qr">{svg}</div>
 <p>PC: <b>{html.escape(config.device_name)}</b></p><p>No camera? Paste this code in the app (<i>Paste link</i>):</p>
-<p><code>{html.escape(uri)}</code></p><p>Then go back to the setup window.</p>""", encoding="utf-8")
+<p><code>{html.escape(uri)}</code></p><p><b>Keep this code to yourself:</b> it holds this PC's key (whoever has it can read your orders). Don't share screenshots of this page.</p><p>Then go back to the setup window.</p>""", encoding="utf-8")
     return page
 
 
@@ -278,5 +284,7 @@ def run(ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
     else:
         say(f'\nLeaving the desk: /horncall:approver on   Back: /horncall:approver off\n'
             f'(without Claude Code: python "{install.LAUNCHER}" on)')
+    if not config.send_replies:
+        say("Optional: 'replies on' also shows the start of the AI's answer when a task ends (off by default).")
     ask("\nRead the list above? Press Enter to close… ")  # setup.cmd's window closes after this
     return 0 if response is not None else 1

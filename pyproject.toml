@@ -35,7 +35,7 @@ package-dir = { "" = "plugin" }
 packages = ["approver"]
 
 [tool.setuptools.package-data]
-approver = ["compat.json"]
+approver = ["compat.json", "opencode_plugin.ts"]
 
 [tool.setuptools.dynamic]
 version = { attr = "approver.__version__" }

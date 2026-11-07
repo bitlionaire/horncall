@@ -22,7 +22,7 @@ class FakeTransport:
         if self.phone:
             self.phone(topic, body)
 
-    def subscribe(self, topic, since, deadline, on_open=None, stop=None):
+    def subscribe(self, topic, since, deadline, on_open=None, stop=None, stop_check_s=None):
         if on_open:
             on_open()
         for body in list(self.topics.get(topic, [])):
@@ -259,6 +259,32 @@ def test_a_tool_that_comes_back_with_other_input_is_matched_by_chat_and_tool():
     assert [m["request"] for m in _sent(transport)] == ["ask-1"]
 
 
+def test_plan_cards_of_one_chat_leave_together():
+    # Seen 2026-11-05: a plan refused on the PC (no hook fires) and the next one approved; ExitPlanMode came back
+    # with another plan text, two waited, nothing was guessed, both cards stayed on the phone.
+    setup()
+    hook._pending_marker("a" * 20, "s1", "plan-1", "ExitPlanMode")
+    hook._pending_marker("b" * 20, "s1", "plan-2", "ExitPlanMode")
+    other = hook._pending_marker("c" * 20, "s2", "plan-3", "ExitPlanMode")
+    transport = FakeTransport()
+    post = dict(session_id="s1", hook_event_name="PostToolUse", tool_name="ExitPlanMode", cwd="/repo",
+                tool_input={"plan": "the plan as saved"})
+    hook.run_posttool(io.StringIO(json.dumps(post)), "claude", make_link_factory(transport))
+    assert sorted(m["request"] for m in _sent(transport)) == ["plan-1", "plan-2"]
+    assert other.exists()
+
+
+def test_a_new_plan_takes_the_refused_one_off_the_phone():
+    setup()
+    hook._pending_marker("a" * 20, "s1", "plan-old", "ExitPlanMode")
+    transport = FakeTransport()  # no phone answers: the new card times out at once in the fake
+    raw = dict(session_id="s1", tool_name="ExitPlanMode", cwd="/repo", tool_input={"plan": "# New plan"})
+    hook.run(io.StringIO(json.dumps(raw)), io.StringIO(), link_factory=make_link_factory(transport))
+    sent = _sent(transport)
+    assert any(m["type"] == "resolved" and m["request"] == "plan-old" for m in sent)
+    assert any(m["type"] == "request" and m["tool"] == "ExitPlanMode" for m in sent)
+
+
 def test_no_guessing_with_two_waiting_calls_or_for_shell_commands():
     setup()
     hook._pending_marker("a" * 20, "s1", "w-1", "WebFetch")
@@ -313,7 +339,7 @@ def test_hook_gives_up_quietly_once_its_card_was_dropped():
     setup()
 
     class AnsweredOnPc(FakeTransport):
-        def subscribe(self, topic, since, deadline, on_open=None, stop=None):
+        def subscribe(self, topic, since, deadline, on_open=None, stop=None, stop_check_s=None):
             if on_open:
                 on_open()
             for marker in list(hook.pending_dir().iterdir()):

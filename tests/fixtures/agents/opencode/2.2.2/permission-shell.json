@@ -1,0 +1,25 @@
+{
+  "agent": "opencode",
+  "agent_version": "2.2.2",
+  "kind": "permission",
+  "captured": "2026-11-05",
+  "source": "our plugin's payload from the 2026-10-29 spike fields (action shell, resources), values made up",
+  "input": {
+    "hook_event_name": "permission.asked",
+    "request_id": "per_1",
+    "session_id": "s-opencode",
+    "cwd": "D:/repo",
+    "tool_name": "shell",
+    "tool_input": {
+      "resources": ["npm test"],
+      "metadata": {}
+    }
+  },
+  "expect": {
+    "tool": "Bash",
+    "nonempty": [
+      "command"
+    ],
+    "session": "s-opencode"
+  }
+}

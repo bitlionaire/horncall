@@ -1,7 +1,7 @@
 ---
 name: approver
 description: Control Horncall (phone approvals of permission requests). Use when the user types /approver or asks to pair the phone, turn phone approvals on/off ("I'm leaving my desk", "I'm back"), check status, send a test, or unpair.
-argument-hint: "pair | on [--hours N] | off | status | test | update | name \"label\" | unpair"
+argument-hint: "pair | on [--hours N] | off | status | test | replies on|off | pcdialog on|off | update | name \"label\" | unpair"
 ---
 
 # Horncall
@@ -23,6 +23,9 @@ On Windows, if `python` is not found, try `py -3`.
 | `status` | pairing, mode, server reachability. |
 | `test` | sends a test request and waits for the phone's answer. |
 | `name "label"` | signs orders from the current project folder with a label shown big on the phone (run from the project folder; `--clear` removes it, no text shows it). Each chat also gets an automatic codename like "Grunt Ironjaw". |
+| `replies on` / `replies off` | when a task ends, also send the first lines of the AI's answer (plain text, max 240 chars, encrypted) so the phone shows them with "mission complete". Off by default. |
+| `pcdialog on` / `pcdialog off` | Codex, Gemini and Copilot show nothing of their own while the phone is asked; with this on (default) the same order also opens a small window on the PC, and the first answer counts. |
+| `phones` / `phones forget <key start>` | lists trusted phones (key, added, last answer); `forget` removes one, e.g. an old phone or an uninstalled app (never the last one). |
 | `update` | downloads the newest plugin release from the relay, checks its signature and installs it over this folder (pairing kept). Tell the user to restart Claude Code afterwards. |
 | `unpair` | deletes the key. |
 

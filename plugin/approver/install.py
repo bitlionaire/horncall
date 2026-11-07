@@ -54,6 +54,16 @@ def hook_command(agent: str, args: str | None = None, powershell: bool = False) 
     return line
 
 
+def posix_command(args: str) -> str:
+    """The command line for agents that run hooks through a POSIX shell, also on Windows (Crush's own shell, Git Bash
+    for CodeBuddy): there a bare backslash escapes the next letter, so paths go in single quotes with forward slashes."""
+    sq = lambda p: "'" + str(p).replace("\\", "/").replace("'", "'\\''") + "'"  # noqa: E731
+    if packaged():
+        return f"{sq(target())} {args}"
+    python = getattr(sys, "_base_executable", None) or sys.executable
+    return f"{sq(python)} {sq(LAUNCHER)} {args}"
+
+
 def points_here(command: str) -> bool:
     """Our hook entry runs THIS installation (not an older copy somewhere else)."""
     return str(target()).lower().replace("\\", "/") in command.lower().replace("\\", "/")
@@ -230,6 +240,8 @@ def codex_hooks_file() -> Path:
 
 CODEX_HOOKS = {
     "PermissionRequest": ("*", "hook codex", 600),
+    # Its questions to the user need no approval: PreToolUse sends the card and returns at once (hook.run).
+    "PreToolUse": ("request_user_input|request_user_input_async", "hook codex", 15),
     # Also runs after a command that exits non-zero (docs): a question answered in the terminal leaves the phone.
     "PostToolUse": ("*", "posttool codex", 15),
     "UserPromptSubmit": (None, "event codex working", 15),
@@ -240,7 +252,11 @@ CODEX_HOOKS = {
 def codex_definitions() -> dict:
     out = {}
     for event, (matcher, args, timeout) in CODEX_HOOKS.items():
-        definition = {"hooks": [{"type": "command", "name": MARK, "command": hook_command("codex", args), "timeout": timeout}]}
+        hook = {"type": "command", "name": MARK, "command": hook_command("codex", args), "timeout": timeout}
+        if event == "PermissionRequest":
+            # Shown by Codex instead of "Running hook" while the phone is asked (it shows no question of its own then).
+            hook["statusMessage"] = "Horncall: answer on your phone or in the Horncall window"
+        definition = {"hooks": [hook]}
         out[event] = {"matcher": matcher, **definition} if matcher else definition
     return out
 
@@ -376,8 +392,192 @@ def claude_installed() -> bool:
     return bool(claude_commands())
 
 
+# --- CodeBuddy Code: hooks in ~/.codebuddy/settings.json, Claude Code's format -------------------------
+# It snapshots hooks at startup and applies changed ones only after a review in its /hooks panel.
+
+def codebuddy_settings() -> Path:
+    # CODEBUDDY_CONFIG_DIR seen in its npm bundle, not in its docs: the fixed home path is the documented one.
+    return Path(os.environ.get("CODEBUDDY_CONFIG_DIR") or Path.home() / ".codebuddy") / "settings.json"
+
+
+CODEBUDDY_HOOKS = {
+    "PermissionRequest": ("*", "hook codebuddy", 1900),
+    "PostToolUse": ("*", "posttool codebuddy", 15),
+    "UserPromptSubmit": (None, "event codebuddy working", 15),
+    "Stop": (None, "event codebuddy idle", 15),
+}
+
+
+def codebuddy_definitions() -> dict:
+    # It runs hook commands through Git Bash on Windows: plain backslash paths broke (seen 2026-11-05).
+    out = {}
+    for event, (matcher, args, timeout) in CODEBUDDY_HOOKS.items():
+        definition = {"hooks": [{"type": "command", "command": posix_command(args), "timeout": timeout}]}
+        out[event] = {"matcher": matcher, **definition} if matcher else definition
+    return out
+
+
+def install_codebuddy() -> Path:
+    path = codebuddy_settings()
+    _save_json(path, _merge(path, codebuddy_definitions()))
+    return path
+
+
+def uninstall_codebuddy() -> bool:
+    return _remove(codebuddy_settings(), CODEBUDDY_HOOKS)
+
+
+def codebuddy_commands() -> list[str]:
+    try:
+        hooks = _load_json(codebuddy_settings()).get("hooks", {})
+    except ValueError:
+        return []
+    return _our_commands({event: hooks.get(event) for event in CODEBUDDY_HOOKS})
+
+
+def codebuddy_installed() -> bool:
+    return bool(codebuddy_commands())
+
+
+# --- Crush: `hook add` lines in its Bash-like ~/.config/crush/crushrc ------------------------------------
+# Crush runs a hook's command through its own POSIX shell (posix_command: quoted forward-slash paths).
+# Our lines sit between two marker comments, so install replaces and uninstall removes exactly them.
+
+CRUSH_BEGIN = "# >>> horncall: phone approvals (remove with: horncall uninstall crush)"
+CRUSH_END = "# <<< horncall"
+# Tools that change things (reads and lookups never go to the phone); `question` gets a card only.
+CRUSH_MATCHER = "^(bash|edit|multiedit|write|download|fetch|web_fetch|lsp_rename|lsp_replace_symbol|question|mcp_.*)$"
+CRUSH_HOOKS = {  # event: (matcher, args, timeout)
+    "PreToolUse": (CRUSH_MATCHER, "hook crush", 1900),
+    "PostToolUse": ("^question$", "posttool crush", 15),  # its question answered: the card leaves the phone
+    "TurnStart": (None, "event crush working", 15),
+    "TurnEnd": (None, "event crush idle", 15),
+    "StopFailure": (None, "event crush idle", 15),  # a turn ended by a provider error: no TurnEnd comes
+}
+
+
+def crush_rc() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
+    return Path(base) / "crush" / "crushrc"
+
+
+def crush_block() -> str:
+    lines = [CRUSH_BEGIN]
+    for event, (matcher, args, timeout) in CRUSH_HOOKS.items():
+        match = f" --matcher '{matcher}'" if matcher else ""
+        # Crush shows a hook's name while it runs: say what it waits for (our lines are found by the markers).
+        name = "'horncall: answer on your phone'" if event == "PreToolUse" else MARK
+        command = re.sub(r'(["$`\\])', r"\\\1", posix_command(args))  # it sits inside crushrc's double quotes
+        lines.append(f'hook add {event} --name {name}{match} --command "{command}" --timeout {timeout}')
+    return "\n".join(lines + [CRUSH_END]) + "\n"
+
+
+def _crush_without_ours(text: str) -> str:
+    start, end = text.find(CRUSH_BEGIN), text.find(CRUSH_END)
+    if start < 0 or end < start:
+        return text
+    return (text[:start] + text[end + len(CRUSH_END):].lstrip("\n")).rstrip("\n") + ("\n" if text[:start].strip() else "")
+
+
+def install_crush() -> Path:
+    path = crush_rc()
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = path.with_name(path.name + ".horncall-backup")
+    if path.exists() and not backup.exists():
+        shutil.copy2(path, backup)
+    rest = _crush_without_ours(text).rstrip("\n")
+    path.write_text((rest + "\n\n" if rest else "") + crush_block(), encoding="utf-8")
+    return path
+
+
+def uninstall_crush() -> bool:
+    path = crush_rc()
+    if not path.exists() or CRUSH_BEGIN not in path.read_text(encoding="utf-8"):
+        return False
+    path.write_text(_crush_without_ours(path.read_text(encoding="utf-8")), encoding="utf-8")
+    return True
+
+
+def crush_commands() -> list[str]:
+    path = crush_rc()
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    start, end = text.find(CRUSH_BEGIN), text.find(CRUSH_END)
+    if start < 0 or end < start:
+        return []
+    return [re.sub(r"\\(.)", r"\1", c) for c in re.findall(r'--command "((?:[^"\\]|\\.)*)"', text[start:end])]
+
+
+def crush_installed() -> bool:
+    return bool(crush_commands())
+
+
+# --- opencode 2: our plugin file in its config's plugins/ folder (loaded automatically) -----------------
+# opencode has no hook processes: the plugin (opencode_plugin.ts, a template) runs our launcher per request.
+
+OPENCODE_TEMPLATE = Path(__file__).with_name("opencode_plugin.ts")
+OPENCODE_PLACEHOLDER = "__HORNCALL_COMMAND__"
+
+
+def opencode_plugin_file() -> Path:
+    if os.environ.get("OPENCODE_CONFIG_DIR"):
+        base = Path(os.environ["OPENCODE_CONFIG_DIR"])
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "opencode"
+    return base / "plugins" / "horncall.ts"
+
+
+def _opencode_parts() -> list[str]:
+    if packaged():
+        return [str(target())]
+    return [getattr(sys, "_base_executable", None) or sys.executable, str(LAUNCHER)]
+
+
+def opencode_plugin_text() -> str:
+    return OPENCODE_TEMPLATE.read_text(encoding="utf-8").replace(OPENCODE_PLACEHOLDER, json.dumps(_opencode_parts()))
+
+
+def install_opencode() -> Path:
+    path = opencode_plugin_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(opencode_plugin_text(), encoding="utf-8")
+    return path
+
+
+def uninstall_opencode() -> bool:
+    path = opencode_plugin_file()
+    if not opencode_commands():
+        return False
+    path.unlink()
+    return True
+
+
+def opencode_commands() -> list[str]:
+    """The command our plugin file runs, as one line (so `points_here` and OUR_COMMAND read it like the others)."""
+    path = opencode_plugin_file()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    found = re.search(r"const COMMAND: string\[\] = (\[.*?\])", text)
+    if not found or "Horncall" not in text:
+        return []
+    try:
+        parts = json.loads(found.group(1))
+    except ValueError:
+        return []
+    return [" ".join(parts) + " hook opencode"]
+
+
+def opencode_installed() -> bool:
+    return bool(opencode_commands())
+
+
 INSTALLERS = {
     "claude": (install_claude, uninstall_claude, claude_installed),
+    "opencode": (install_opencode, uninstall_opencode, opencode_installed),
+    "crush": (install_crush, uninstall_crush, crush_installed),
+    "codebuddy": (install_codebuddy, uninstall_codebuddy, codebuddy_installed),
     "gemini": (install_gemini, uninstall_gemini, gemini_installed),
     "copilot": (install_copilot, uninstall_copilot, copilot_installed),
     "codex": (install_codex, uninstall_codex, codex_installed),
@@ -386,6 +586,7 @@ INSTALLERS = {
 
 # Our commands currently in each tool's configuration (to tell "installed here" from "an older copy").
 COMMANDS = {"claude": claude_commands, "gemini": gemini_commands, "copilot": copilot_commands, "codex": codex_commands,
+            "codebuddy": codebuddy_commands, "crush": crush_commands, "opencode": opencode_commands,
             "claude-statusline": claude_statusline_commands}
 
 
@@ -405,6 +606,12 @@ def preview(agent: str) -> list[tuple[Path, str]]:
         changes = [(gemini_settings(), {"hooks": {e: [d] for e, d in gemini_definitions().items()}})]
     elif agent == "codex":
         changes = [(codex_hooks_file(), {"hooks": {e: [d] for e, d in codex_definitions().items()}})]
+    elif agent == "codebuddy":
+        changes = [(codebuddy_settings(), {"hooks": {e: [d] for e, d in codebuddy_definitions().items()}})]
+    elif agent == "crush":
+        return [(crush_rc(), crush_block())]
+    elif agent == "opencode":
+        return [(opencode_plugin_file(), opencode_plugin_text())]
     elif agent == "copilot":
         changes = [(copilot_hook_file(), copilot_file_content())]
     elif agent == "claude-statusline":

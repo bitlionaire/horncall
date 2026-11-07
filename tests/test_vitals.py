@@ -59,7 +59,17 @@ def test_claude_context_from_transcript_and_plan_from_status_line(tmp_path, appr
         "t": time.time(), "five_hour": {"used_percentage": 23.5, "resets_at": 1738425600},
         "seven_day": {"used_percentage": 41.2, "resets_at": 1738857600}, "ctx_left": 92}}))
     assert vitals.read("claude", {"transcript_path": path, "session_id": "s"}) == {
-        "plan_left": 59, "plan_window": "7d", "plan_resets": 1738857600, "ctx_left": 92}
+        "plan_left": 59, "plan_window": "7d", "plan_resets": 1738857600, "ctx_left": 92,
+        "plans": [{"window": "5h", "left": 76, "resets": 1738425600}, {"window": "7d", "left": 59, "resets": 1738857600}]}
+
+
+def test_codex_plus_sends_both_windows_short_first(tmp_path):
+    entry = {"type": "event_msg", "payload": {"type": "token_count", "info": {}, "rate_limits": {
+        "primary": {"used_percent": 6.0, "window_minutes": 300, "resets_at": 1},
+        "secondary": {"used_percent": 17.0, "window_minutes": 10080, "resets_at": 2}}}}
+    v = vitals.read("codex", {"transcript_path": write_jsonl(tmp_path / "r.jsonl", entry)})
+    assert v["plan_left"] == 83 and v["plan_window"] == "7d"  # older apps: the tighter one
+    assert v["plans"] == [{"window": "5h", "left": 94, "resets": 1}, {"window": "7d", "left": 83, "resets": 2}]
 
 
 def test_broken_files_mean_no_bar(tmp_path):
@@ -86,3 +96,14 @@ def test_status_line_records_limits_and_wraps_the_old_one(tmp_path, monkeypatch,
     assert saved["s9"]["five_hour"]["used_percentage"] == 10 and saved["s9"]["ctx_left"] == 70
     assert install.uninstall_claude_statusline()
     assert json.loads((tmp_path / "settings.json").read_text())["statusLine"]["command"] == "echo MINE"
+
+
+def test_claude_without_status_line_shows_a_hit_limit_until_it_resets(tmp_path, approver_home):
+    import time
+    ok = {"type": "assistant", "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 2, "cache_read_input_tokens": 1000}}}
+    hit = {"type": "assistant", "apiErrorParams": {"rate_limit_info": {
+        "status": "rejected", "resetsAt": int(time.time()) + 3600, "rateLimitType": "five_hour"}}}
+    v = vitals.read("claude", {"transcript_path": write_jsonl(tmp_path / "a.jsonl", ok, hit), "session_id": "s"})
+    assert v["exhausted"] and v["plan_left"] == 0 and v["plan_window"] == "5h"
+    v = vitals.read("claude", {"transcript_path": write_jsonl(tmp_path / "b.jsonl", hit, ok), "session_id": "s"})
+    assert "plan_left" not in v  # a normal reply after it: fine again

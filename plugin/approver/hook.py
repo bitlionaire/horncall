@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import TextIO
 
-from . import agents, compat, crypto, phones, protocol, vitals
+from . import agents, compat, crypto, pcdialog, phones, protocol, reply, vitals
 from .config import Config, State, home_dir, log_path
 from .link import Link
 
@@ -105,6 +105,11 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
         return 0  # not a question for the phone (e.g. Gemini reading a file)
 
     wait_s = min(config.timeout_s, adapter.max_wait_s)
+    # No screen for the PC window (SSH, no desktop) and the agent shows nothing while we wait: don't block the
+    # terminal for half an hour. After noscreen_wait_s the agent asks in its own way (the phone card times out).
+    terminal_fallback = adapter.blocks_own_prompt and config.noscreen_wait_s > 0 and not pcdialog.can_show()
+    if terminal_fallback:
+        wait_s = min(wait_s, config.noscreen_wait_s)
     request = protocol.build_request(hook_input.as_claude(), config.device_name, wait_s,
                                      config.max_preview_chars, config.danger_patterns,
                                      labels=config.labels, agent=adapter.name)
@@ -116,6 +121,9 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
         request["duty_until"] = int(state.on_until)
         request["duty_since"] = int(state.on_since or request["ts"])
     link = link_factory(config.key, config.server)
+    if hook_input.notify_only:
+        request["expires_at"] = request["ts"] + config.timeout_s  # nothing waits on it: the agent's hook limit doesn't apply
+        return _notify_question(link, request, hook_input, adapter.name)
     deadline = time.time() + wait_s
     log("request", id=request["id"], agent=adapter.name, tool=hook_input.tool, risk=request["risk"],
         session=request.get("session"), fp=request["fp"])
@@ -131,17 +139,66 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
     # While we wait, the same question is open on the PC. If it's answered there, the agent may kill
     # this process (the marker stays and the PostToolUse / Stop hook tells the phone, see posttool) or
     # leave it running (Claude Code does): then posttool / run_event removes the marker and we give up.
+    if request.get("needs_pc"):
+        # A new plan or question in this chat: the previous one was answered or refused on the PC (a refusal
+        # fires no hook). Its card leaves the phone; its waiting hook sees the marker gone and ends.
+        for old in _same_tool_markers(hook_input.session_id, hook_input.tool):
+            _resolve(old, adapter.name, config, link_factory, via="superseded")
     marker = _pending_marker(request["fp"], hook_input.session_id, request["id"], hook_input.tool)
+    # The agent shows nothing while we wait: the same order goes to a window on the PC (pcdialog), first answer wins.
+    dialog = pcdialog.start(request, adapter.title, pcdialog_dir()) \
+        if config.pc_dialog and adapter.blocks_own_prompt and not request.get("needs_pc") else None
+
+    def stop() -> bool:
+        nonlocal dialog
+        if dialog is not None and dialog.answer() == "off":
+            # "Turn PC windows off": this window goes, the order keeps waiting on the phone.
+            _pc_windows_off()
+            dialog.close()
+            dialog = None
+        return (marker is not None and not marker.exists()) or (dialog is not None and dialog.answer() is not None)
+
     answered_on_pc = False
+    on_pc = None
     try:
+        faster = {"stop_every_s": 2} if dialog is not None else {}  # a click on the PC counts within seconds
         response = link.request_and_wait(request, deadline, accept=accept,
-                                         stop=(lambda: not marker.exists()) if marker is not None else None)
-        answered_on_pc = response is None and marker is not None and not marker.exists()
+                                         stop=stop if marker is not None or dialog is not None else None, **faster)
+        on_pc = dialog.answer() if dialog is not None and response is None else None
+        answered_on_pc = response is None and on_pc is None and marker is not None and not marker.exists()
     except Exception as exc:  # network trouble must never break the agent
         log("error", id=request["id"], error=exc.__class__.__name__)
         response = None
     finally:
         _drop(marker)
+        if dialog is not None:
+            dialog.close()
+
+    if on_pc == "offduty":
+        # "Off duty for 2 h": you're at this PC. Nothing from it goes to the phone for 2 h, and this order is handed
+        # back to the agent, which asks in its own way (no opinion); its card leaves the phone.
+        state = State.load()
+        state.paused_until = time.time() + OFF_DUTY_S
+        state.save()
+        log("off-duty", id=request["id"], hours=OFF_DUTY_S // 3600)
+        try:
+            link.send_cancel(request["id"], "off-duty")
+        except Exception:
+            pass
+        return 0
+
+    if on_pc is not None:
+        # Answered in Horncall's PC window: the agent gets it as if from the phone, the phone drops the card.
+        log("response", id=request["id"], decision=on_pc, via="pc")
+        try:
+            link.send_resolved(request["fp"], request["id"])
+        except Exception:
+            pass
+        if on_pc == "allow":
+            _emit(stdout, adapter.allow())
+        elif on_pc == "deny":
+            _emit(stdout, adapter.deny("The user denied this on the PC (Horncall window)."))
+        return 0
 
     if answered_on_pc:
         # The card is already gone from the phone (it was told "resolved"): nothing to cancel, nothing to say.
@@ -154,11 +211,13 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
             link.send_cancel(request["id"], "timeout")  # the card leaves the phone too
         except Exception:
             pass
-        if config.on_timeout == "deny":
+        if config.on_timeout == "deny" and not terminal_fallback:  # the fallback's point is the terminal's own question
             _emit(stdout, adapter.deny("No answer from the phone (Horncall timeout)."))
         return 0
 
     log("response", id=request["id"], decision=response["decision"], via=response.get("via"))
+    if isinstance(response.get("pc_window"), bool) and response["pc_window"] != config.pc_dialog:
+        _set_pc_windows(response["pc_window"])  # the app's "windows on the PC" switch (app 0.7.0+)
     if response["decision"] == "pass":
         # The phone is muted ("ask me at the PC"): no opinion, the agent's own dialog decides. The phone
         # showed no card, so there is nothing to cancel.
@@ -178,6 +237,44 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
     else:
         via = response.get("via", "phone")
         _emit(stdout, adapter.deny(f"The user denied this from their phone ({via})."))
+    return 0
+
+
+OFF_DUTY_S = 2 * 3600
+
+
+def _pc_windows_off() -> None:
+    """The PC window's "turn PC windows off" link (back on: the phone app's switch, or `pcdialog on`)."""
+    _set_pc_windows(False)
+
+
+def _set_pc_windows(on: bool) -> None:
+    config = Config.load()  # reloaded: it may have changed while we waited
+    if config is not None and config.pc_dialog != on:
+        config.pc_dialog = on
+        config.save()
+        log("pc-window", choice="on" if on else "off")
+
+
+def _notify_question(link, request: dict, hook_input, agent: str) -> int:
+    """A question the agent asks on the PC anyway (Codex): put a card on the phone and return at once,
+    with no output, so the question shows on the PC without waiting for us.
+
+    It leaves the phone like any question answered on the PC: request_user_input when the tool returns
+    (PostToolUse finds the marker); request_user_input_async returns at once and is answered later as a new
+    user message, so no marker: the next "working" of that chat takes the card off (the app drops older orders).
+    """
+    if hook_input.answered_later:
+        request["answered_later"] = True  # apps 0.6.2+ keep the card when the turn ends; older ones drop it then
+    try:
+        link.send_request(request)
+    except Exception as exc:  # network trouble must never break the agent
+        log("error", id=request["id"], error=exc.__class__.__name__)
+        return 0
+    if not hook_input.answered_later:
+        _pending_marker(request["fp"], hook_input.session_id, request["id"], hook_input.tool)
+    log("question-sent", id=request["id"], agent=agent, session=request.get("session"), fp=request["fp"],
+        later=hook_input.answered_later)
     return 0
 
 
@@ -229,9 +326,14 @@ def run_event(stdin: TextIO, agent: str, state_name: str, link_factory=Link) -> 
     unit_vitals = vitals.read(adapter.name, raw)
     if unit_vitals:
         status["vitals"] = unit_vitals
+    if state_name == "idle" and config.send_replies:
+        answer = reply.read(adapter.name, raw)
+        if answer:
+            status["reply"] = answer
     try:
         link_factory(config.key, config.server).send_status(status)
-        log("status", agent=adapter.name, state=state_name, worked_s=worked, session=status.get("session"))
+        log("status", agent=adapter.name, state=state_name, worked_s=worked, session=status.get("session"),
+            **({"reply_chars": len(status["reply"])} if "reply" in status else {}))
     except Exception as exc:
         log("error", event="status", error=exc.__class__.__name__)
     return 0
@@ -267,6 +369,11 @@ def _task_clock(session_id: str, state_name: str, now: int, transcript: str = ""
 
 def pending_dir():
     return log_path().with_name("pending")
+
+
+def pcdialog_dir():
+    # Not in pending/: the markers there are looked up by fingerprint, an order file would pass for one.
+    return log_path().with_name("pcdialog")
 
 
 def _pending_marker(fp: str, session_id: str | None, request_id: str, tool: str | None = None):
@@ -314,6 +421,12 @@ def run_posttool(stdin: TextIO, agent: str, link_factory=Link) -> int:
             # answers): the only waiting call of this chat and tool is the one that just ran.
             _resolve(marker, adapter.name, config, link_factory, via="same-tool")
             return 0
+        if hook_input.tool in protocol.NEEDS_PC_TOOLS:
+            # A chat shows one plan or question dialog at a time: older ones of this tool were refused on the PC
+            # (no hook says so), and ExitPlanMode comes back with another plan text than it asked with.
+            for marker in _same_tool_markers(hook_input.session_id, hook_input.tool):
+                _resolve(marker, adapter.name, config, link_factory, via="same-tool")
+            return 0
         # Runs only while some order waits (the launcher skips it otherwise): a call that is not one of
         # them is normal (parallel tools), but this line tells a real mismatch apart when a card stays.
         waiting = len(list(folder.glob("*"))) if folder.exists() else 0
@@ -342,11 +455,18 @@ def _marker_data(path) -> dict:
 def _lone_marker(session_id: str | None, tool: str):
     """The one waiting order of this chat for this tool, or None (none, or several: no guessing).
     Never for shell commands: a wrong guess would take a card down while the agent still waits for it."""
-    folder = pending_dir()
-    if tool in ("Bash", "PowerShell") or not folder.exists():
+    if tool in ("Bash", "PowerShell"):
         return None
-    same = [p for p in folder.iterdir() if (d := _marker_data(p)).get("session") == session_id and d.get("tool") == tool]
+    same = _same_tool_markers(session_id, tool)
     return same[0] if len(same) == 1 else None
+
+
+def _same_tool_markers(session_id: str | None, tool: str) -> list:
+    folder = pending_dir()
+    if not folder.exists():
+        return []
+    return sorted((p for p in folder.iterdir() if (d := _marker_data(p)).get("session") == session_id
+                   and d.get("tool") == tool), key=_mtime)
 
 
 def _resolve(marker, agent: str, config, link_factory, via: str = "fp") -> None:

@@ -17,7 +17,8 @@ PAIR_SCHEME = "horncall://pair"
 
 
 def pairing_uri(config: Config) -> str:
-    query = urllib.parse.urlencode({"v": 1, "s": config.server, "k": config.key, "d": config.device_name})
+    # ':' and '/' left as they are: a smaller QR, and every app version decodes it the same (URLDecoder).
+    query = urllib.parse.urlencode({"v": 1, "s": config.server, "k": config.key, "d": config.device_name}, safe=":/")
     return f"{PAIR_SCHEME}?{query}"
 
 
@@ -76,6 +77,7 @@ def cmd_pair(args) -> None:
             pass
     print("\nScan it in the Horncall app, or paste this code:\n")
     print(uri)
+    print("\nKeep it to yourself: it holds this PC's key (whoever has it can read your orders). Don't share screenshots of it.")
     print(f"\nDevice: {config.device_name}   Server: {config.server}")
     print(f"For the next {phones.PAIRING_WINDOW_S // 60} min a new phone joins with its first answer "
           "(answer one order or send a test).")
@@ -93,11 +95,82 @@ def cmd_on(args) -> None:
     State(mode="on", on_until=until, on_since=time.time()).save()
     suffix = f" for {args.hours:g} h" if args.hours else ""
     print(f"Approver ON{suffix} — permission requests go to your phone.")
+    from . import pcdialog
+    if not pcdialog.can_show():
+        config = Config.load()
+        wait = f"{config.noscreen_wait_s} s, then they ask here in the terminal" if config.noscreen_wait_s else \
+            "up to the full timeout (phone only)"
+        print(f"No screen here (SSH?): Codex, Gemini, Copilot, CodeBuddy and Crush wait for the phone {wait}. "
+              f"Change: {command()} noscreen <seconds>|off")
 
 
 def cmd_off(args) -> None:
     State(mode="off").save()
     print("Approver OFF — Claude Code asks here, as usual.")
+
+
+def cmd_replies(args) -> None:
+    config = _require_config()
+    config.send_replies = args.switch == "on"
+    config.save()
+    if config.send_replies:
+        print("Replies ON — when a task ends, the phone shows the first lines of the AI's answer "
+              "(plain text, encrypted, at most 240 characters).")
+    else:
+        print("Replies OFF — the phone only hears that the task is done.")
+
+
+def cmd_pcdialog(args) -> None:
+    config = _require_config()
+    config.pc_dialog = args.switch == "on"
+    config.save()
+    if config.pc_dialog:
+        print("PC window ON — Codex, Gemini and Copilot orders also open a small window here; the first answer counts.")
+    else:
+        print("PC window OFF — while the phone is on duty, Codex, Gemini and Copilot orders go to the phone only.")
+
+
+def cmd_noscreen(args) -> None:
+    config = _require_config()
+    value = args.value.lower()
+    if value == "off":
+        config.noscreen_wait_s = 0
+    elif value.isdigit() and int(value) >= 10:
+        config.noscreen_wait_s = int(value)
+    else:
+        print("Give seconds (10 or more), or off.")
+        sys.exit(1)
+    config.save()
+    if config.noscreen_wait_s:
+        print(f"Without a screen (SSH): the phone gets {config.noscreen_wait_s} s, then the AI asks in the terminal.")
+    else:
+        print("Without a screen (SSH): phone only, up to the full timeout.")
+
+
+def cmd_phones(args) -> None:
+    config = _require_config()
+    from . import phones
+    if args.action == "forget":
+        hits = phones.find(config, args.key or "")
+        if len(hits) != 1:
+            print(f"{'No' if not hits else len(hits)} trusted phone(s) match '{args.key}'. Give more of the key, as listed by: "
+                  f"{command()} phones")
+            sys.exit(1)
+        if len(config.phones) == 1:
+            print(f"That is the only trusted phone: answers would stop counting. Pair a new phone first ({command()} pair).")
+            sys.exit(1)
+        config.phones.remove(hits[0])
+        config.save()
+        print(f"Forgotten: {crypto.fingerprint(hits[0]['pub'])} — its answers no longer count.")
+        return
+    if not config.phones:
+        print("No phone trusted yet: the first phone that answers with Horncall 0.5.5+ becomes trusted.")
+        return
+    day = lambda t: time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "—"  # noqa: E731
+    print("Trusted phones (only their signed answers count):")
+    for p in config.phones:
+        print(f"  {crypto.fingerprint(p['pub'])}   added {day(p.get('added'))}   last answer {day(p.get('last'))}")
+    print(f"Remove one (e.g. an old phone or reinstall): {command()} phones forget <start of its key>")
 
 
 def cmd_status(args) -> None:
@@ -109,15 +182,27 @@ def cmd_status(args) -> None:
         print(f"paired: no  (run: {command()} pair)")
         return
     mode = "on" if state.is_on() else "off"
+    if state.mode == "on" and (state.paused_until or 0) > time.time():
+        mode = f"off duty until {time.strftime('%H:%M', time.localtime(state.paused_until))} (from the PC window; {command()} on resumes now)"
     if mode == "on" and state.on_until:
         mode += f" (until {time.strftime('%H:%M', time.localtime(state.on_until))})"
     print(f"paired: yes  device={config.device_name}")
     print(f"mode:   {mode}")
     print(f"server: {config.server}  reachable={'yes' if Ntfy(config.server).ping() else 'NO'}")
     print(f"timeout: {config.timeout_s}s, on timeout: {config.on_timeout}")
+    print(f"replies: {'on — a finished task sends the start of the answer' if config.send_replies else 'off'}"
+          f"  (change: {command()} replies on|off)")
+    window = "on — Codex/Gemini/Copilot/CodeBuddy/Crush orders also open a window here" if config.pc_dialog else         "off (back on: the phone app's switch, or pcdialog on)"
+    print(f"pc window: {window}"
+          f"  (change: {command()} pcdialog on|off)")
+    from . import pcdialog
+    no_screen = f"{config.noscreen_wait_s} s on the phone, then the terminal" if config.noscreen_wait_s else "phone only"
+    here = "" if pcdialog.can_show() else "  <- this machine has no screen"
+    print(f"no screen: {no_screen}{here}  (change: {command()} noscreen <s>|off)")
     if config.phones:
         keys = ", ".join(crypto.fingerprint(p["pub"]) for p in config.phones)
-        print(f"phones: {len(config.phones)} trusted (key {keys}) — only their signed answers count")
+        print(f"phones: {len(config.phones)} trusted (key {keys}) — only their signed answers count"
+              + (f"  (list / forget: {command()} phones)" if len(config.phones) > 1 else ""))
     else:
         print("phones: none signed yet — the first phone with Horncall 0.5.5+ that answers becomes trusted")
     from . import install, setup
@@ -302,6 +387,19 @@ def build_parser(prog: str = "approver") -> argparse.ArgumentParser:
 
     sub.add_parser("off", help="use the normal dialog on this PC").set_defaults(func=cmd_off)
     sub.add_parser("status", help="show pairing and mode").set_defaults(func=cmd_status)
+    p = sub.add_parser("replies", help="send the start of the AI's answer with 'mission complete' (off by default)")
+    p.add_argument("switch", choices=["on", "off"])
+    p.set_defaults(func=cmd_replies)
+    p = sub.add_parser("pcdialog", help="Codex/Gemini/Copilot orders also open a window on this PC (on by default)")
+    p.add_argument("switch", choices=["on", "off"])
+    p.set_defaults(func=cmd_pcdialog)
+    p = sub.add_parser("noscreen", help="where no PC window can open (SSH): seconds for the phone before the terminal asks")
+    p.add_argument("value", help="seconds (default 120), or off = phone only")
+    p.set_defaults(func=cmd_noscreen)
+    p = sub.add_parser("phones", help="list trusted phones, or forget one (old phone, reinstalled app)")
+    p.add_argument("action", nargs="?", choices=["list", "forget"], default="list")
+    p.add_argument("key", nargs="?", help="start of the key fingerprint to forget, e.g. EA:85")
+    p.set_defaults(func=cmd_phones)
 
     p = sub.add_parser("test", help="send a test request to the phone")
     p.add_argument("--timeout", type=int, default=60)

@@ -20,6 +20,10 @@ class HookInput:
     tool_input: dict
     cwd: str | None
     session_id: str | None
+    # A question the agent shows on the PC no matter what (Codex request_user_input): the phone only hears about it.
+    notify_only: bool = False
+    # Answered later as a new user message (Codex request_user_input_async), not by the tool returning.
+    answered_later: bool = False
 
     def as_claude(self) -> dict:
         return {"tool_name": self.tool, "tool_input": self.tool_input, "cwd": self.cwd, "session_id": self.session_id}
@@ -30,6 +34,9 @@ class Agent:
     title = "?"
     # The agent kills the hook after its configured timeout; wait a bit less than that.
     max_wait_s = 1850
+    # The agent shows nothing of its own while our hook waits ("Running hook"): Horncall opens a window on the PC
+    # next to the phone (pcdialog). Claude Code shows its own dialog alongside, so it doesn't need one.
+    blocks_own_prompt = True
 
     def parse(self, raw: dict) -> HookInput | None:
         """None = not something to ask the phone about (let the agent decide)."""
@@ -45,6 +52,7 @@ class Agent:
 class Claude(Agent):
     """Claude Code `PermissionRequest` hook (the plugin's hooks.json)."""
     name, title = "claude", "Claude Code"
+    blocks_own_prompt = False
 
     def parse(self, raw):
         tool_input = raw.get("tool_input") or {}
@@ -165,15 +173,30 @@ class Codex(Claude):
     Its shell tool may pass the command as an argv list, and edits come as one apply_patch text.
     """
     name, title = "codex", "OpenAI Codex CLI"
+    blocks_own_prompt = True  # its PermissionRequest hook runs before its own prompt (Claude's subclass, not its UI)
     # Its hooks.json keeps timeout 600: changing a trusted hook makes the user re-approve it in /hooks.
     max_wait_s = 580
 
     SHELL = {"shell", "bash", "exec_command", "local_shell", "container.exec", "unified_exec"}
+    # Its questions to the user: they need no approval, so only PreToolUse sees them (hook.run sends a card, waits for nothing).
+    QUESTIONS = {"request_user_input", "request_user_input_async"}
 
     def parse(self, raw):
         hi = super().parse(raw)
         low = hi.tool.lower()
         args = hi.tool_input
+        if low in self.QUESTIONS:
+            # request_user_input: Claude's shape (header, question, options {label, description});
+            # request_user_input_async: {title, options: [text]}, answered later as a new user message.
+            questions = []
+            for q in args.get("questions") or []:
+                if not isinstance(q, dict):
+                    continue
+                options = [o if isinstance(o, dict) else {"label": str(o)} for o in q.get("options") or []]
+                questions.append({k: v for k, v in {"header": q.get("header"), "question": q.get("question") or q.get("title"),
+                                                     "options": options}.items() if v})
+            return HookInput("AskUserQuestion", {"questions": questions}, hi.cwd, hi.session_id,
+                             notify_only=True, answered_later=low.endswith("_async"))
         if low in self.SHELL or isinstance(args.get("command"), list):
             command = args.get("command") or args.get("cmd") or ""
             if isinstance(command, list):
@@ -193,7 +216,92 @@ class Codex(Claude):
         return hi
 
 
-AGENTS: dict[str, Agent] = {a.name: a for a in (Claude(), Gemini(), Copilot(), Codex())}
+class CodeBuddy(Claude):
+    """Tencent CodeBuddy Code `PermissionRequest` hook (~/.codebuddy/settings.json): Claude Code's wire format,
+    the same tool names (Bash, Write, Edit, …). PermissionRequest exists since 2.97.0 (its CHANGELOG)."""
+    name, title = "codebuddy", "CodeBuddy Code"
+    # Unverified whether it shows its own prompt next to the hook like Claude Code: until a live test says so,
+    # Horncall's PC window shows the order too (a second dialog beats none).
+    blocks_own_prompt = True
+
+
+class Crush(Agent):
+    """Charm's Crush `PreToolUse` hook (~/.config/crush/crushrc): Claude-like payload, lower-case tool names.
+
+    It runs before Crush's own permission check: "allow" pre-approves and skips its prompt, "deny" blocks,
+    silence falls through to its prompt. It fires for every matched tool, also ones Crush would let through
+    unasked, so the crushrc matcher lists only the tools that change things.
+    """
+    name, title = "crush", "Crush"
+    TOOLS = {"bash": "Bash", "edit": "Edit", "multiedit": "MultiEdit", "write": "Write", "download": "WebFetch",
+             "fetch": "WebFetch", "web_fetch": "WebFetch"}
+
+    def parse(self, raw):
+        tool = str(raw.get("tool_name") or "")
+        args = raw.get("tool_input") or {}
+        if not isinstance(args, dict):
+            args = {"input": args}
+        cwd, session = raw.get("cwd"), raw.get("session_id")
+        if tool == "question":
+            # Crush asks the user itself and waits: a card for the phone, the answer is given in Crush.
+            questions = [{k: v for k, v in {"header": q.get("label"), "question": q.get("question"),
+                                             "options": q.get("choices") or q.get("options")}.items() if v}
+                         for q in args.get("questions") or [] if isinstance(q, dict)]
+            return HookInput("AskUserQuestion", {"questions": questions}, cwd, session, notify_only=True)
+        ours = self.TOOLS.get(tool)
+        if ours is None and not tool.startswith(("mcp_", "lsp_rename", "lsp_replace_symbol")):
+            return None  # reads and lookups: Crush decides
+        return HookInput(ours or tool, args, cwd, session)
+
+    def allow(self):
+        return {"decision": "allow"}
+
+    def deny(self, message):
+        return {"decision": "deny", "reason": message}
+
+
+class Opencode(Agent):
+    """opencode 2, through our plugin (opencode_plugin.ts): it hands over each `permission.asked` request as
+    {tool_name: action, tool_input: {resources, metadata}} and replies with what we print. opencode keeps its own
+    question open meanwhile (like Claude Code), so no PC window is needed."""
+    name, title = "opencode", "opencode"
+    blocks_own_prompt = False
+
+    def parse(self, raw):
+        action = str(raw.get("tool_name") or "")
+        args = raw.get("tool_input") or {}
+        resources = [str(r) for r in args.get("resources") or []]
+        meta = args.get("metadata") or {}
+        cwd, session = raw.get("cwd"), raw.get("session_id")
+        first = resources[0] if resources else ""
+        if action in ("shell", "bash"):
+            command = {"command": "\n".join(resources)}
+            if meta.get("description"):
+                command["description"] = str(meta["description"])
+            return HookInput("Bash", command, cwd, session)
+        if action == "edit":
+            files = [f for f in meta.get("files") or [] if isinstance(f, dict)]
+            paths = [str(f.get("file")) for f in files if f.get("file")] or resources
+            # Each patch under its file's name, and every path in patch_files: risk checks see a later file too.
+            patch = "\n\n".join(f"--- {f.get('file')}\n{f.get('patch') or ''}" for f in files).strip()
+            return HookInput("Edit", {"file_path": paths[0] if paths else first, "old_string": "",
+                                      "new_string": patch or "(no diff)", "patch_files": paths}, cwd, session)
+        if action in ("webfetch", "websearch"):
+            key = "url" if action == "webfetch" else "query"
+            return HookInput("WebFetch" if action == "webfetch" else "WebSearch", {key: first}, cwd, session)
+        if action in ("read", "glob", "grep", "list"):
+            return HookInput("Read", {"file_path": first}, cwd, session)
+        # external_directory, skill, subagent, MCP tools (<server>_<tool>) …: shown as they come
+        return HookInput(action or "?", {"resources": resources}, cwd, session)
+
+    def allow(self):
+        return {"decision": "allow"}
+
+    def deny(self, message):
+        return {"decision": "deny", "reason": message}
+
+
+AGENTS: dict[str, Agent] = {a.name: a for a in (Claude(), Gemini(), Copilot(), Codex(), CodeBuddy(), Crush(), Opencode())}
 
 
 def get(name: str | None) -> Agent:

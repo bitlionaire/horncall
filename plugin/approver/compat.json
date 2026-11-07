@@ -1,6 +1,6 @@
 {
   "_about": "Which agent versions each adapter was written and checked against. Read by tools/agent_versions.py, the hook's capture mode and tests/test_agent_contract.py; procedure in docs/AGENTS.md. Evidence levels: live = allow and deny checked end to end on a phone (what was not checked, e.g. timeout, is said in the note); field-names = real input keys seen in hook.log or a capture, values made up; docs = taken from the documentation only; unit = made-up payloads only.",
-  "reviewed": "2026-11-01",
+  "reviewed": "2026-11-07",
   "agents": {
     "claude": {
       "title": "Claude Code",
@@ -27,7 +27,7 @@
         "deny": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "..."}}}
       },
       "no_opinion": "empty stdout, exit 0: Claude shows its own dialog",
-      "watch": ["PermissionRequest", "hookSpecificOutput", "decision", "hook timeout", "plugin hooks.json", "statusLine", "args", "PostToolUseFailure (failed commands do not fire PostToolUse)", "tool_use_id (PostToolUse has it, PermissionRequest does not)", "a PermissionRequest hook keeps running after the dialog is answered", "no hook fires on a manual deny or Esc"]
+      "watch": ["PermissionRequest", "hookSpecificOutput", "decision", "hook timeout", "plugin hooks.json", "statusLine", "args", "PostToolUseFailure (failed commands do not fire PostToolUse)", "tool_use_id (PostToolUse has it, PermissionRequest does not)", "2.1.317-318 changelog read 2026-11-05: no hook changes for us (turn.step mods, SDK onFailure, PreCompact output cap)", "2.1.319 (read 2026-11-07): PostToolUse hooks get up to 10 s to finish (ours ends in well under 1 s)", "a PermissionRequest hook keeps running after the dialog is answered", "no hook fires on a manual deny or Esc"]
     },
     "gemini": {
       "title": "Gemini CLI",
@@ -50,7 +50,7 @@
       "input_fields": ["tool_name", "tool_input", "cwd", "session_id", "hook_event_name", "transcript_path", "timestamp", "mcp_context", "original_request_name"],
       "output": {"allow": {"decision": "allow"}, "deny": {"decision": "deny", "reason": "..."}},
       "no_opinion": "empty stdout, exit 0: Gemini's own approval mode decides (users run gemini --yolo so the phone is the only question)",
-      "watch": ["BeforeTool", "hooksConfig", "decision", "tool names (run_shell_command, write_file, replace)", "MCP tool naming mcp_<server>_<tool> (our matcher mcp_.*; read-only names skip the phone)", "subagent tools", "non-JSON stdout counts as allow", "exit code 2 = block"]
+      "watch": ["0.67 migration converts Claude hook timeouts: a migration may copy Horncall's Claude hooks into Gemini (double cards)", "BeforeTool", "hooksConfig", "decision", "tool names (run_shell_command, write_file, replace)", "MCP tool naming mcp_<server>_<tool> (our matcher mcp_.*; read-only names skip the phone)", "subagent tools", "non-JSON stdout counts as allow", "exit code 2 = block"]
     },
     "copilot": {
       "title": "GitHub Copilot CLI",
@@ -75,7 +75,7 @@
       "input_fields": ["toolName", "toolInput", "cwd", "sessionId", "hookName", "permissionSuggestions", "timestamp", "agentId", "agentType", "parentAgentId", "transcriptPath"],
       "output": {"allow": {"behavior": "allow"}, "deny": {"behavior": "deny", "message": "..."}},
       "no_opinion": "empty stdout, exit 0: Copilot asks in the terminal",
-      "watch": ["permissionRequest", "hooks file version", "toolName values (powershell, bash, edit, create)", "toolInput keys (edit sends diff + file_path)", "requestSandboxBypass (an allow doesn't approve it: we stay silent)", "timeoutSec", "exec/args entries", "PascalCase events switch to snake_case payloads", "exit code 2 = deny", "subagents (agentId/parentAgentId)"]
+      "watch": ["sessions since 2026-10-29 carry no quotaSnapshots (only per-session AI credits: totalNanoAiu, totalPremiumRequests): no plan bar from files", "permissionRequest", "hooks file version", "toolName values (powershell, bash, edit, create)", "toolInput keys (edit sends diff + file_path)", "requestSandboxBypass (an allow doesn't approve it: we stay silent)", "timeoutSec", "exec/args entries", "PascalCase events switch to snake_case payloads", "exit code 2 = deny", "subagents (agentId/parentAgentId)"]
     },
     "codex": {
       "title": "OpenAI Codex CLI",
@@ -91,6 +91,7 @@
       "config": {"file": "~/.codex/hooks.json", "env": "CODEX_HOME"},
       "hooks": {
         "PermissionRequest": {"role": "permission", "matcher": "*", "timeout_s": 600},
+        "PreToolUse": {"role": "permission", "matcher": "request_user_input|request_user_input_async", "timeout_s": 15},
         "PostToolUse": {"role": "posttool", "matcher": "*", "timeout_s": 15},
         "UserPromptSubmit": {"role": "working", "timeout_s": 15},
         "Stop": {"role": "idle", "timeout_s": 15}
@@ -101,7 +102,86 @@
         "deny": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "..."}}}
       },
       "no_opinion": "empty stdout, exit 0: Codex uses its approval policy",
-      "watch": ["hooks.json", "PermissionRequest", "hooks must be trusted again in /hooks after any change to them", "apply_patch", "exec_command / unified_exec", "timeout cap (we keep 600 s)"]
+      "watch": ["hooks.json", "PermissionRequest", "hooks must be trusted again in /hooks after any change to them", "apply_patch", "exec_command / unified_exec", "timeout cap (we keep 600 s)", "request_user_input(_async) reach only PreToolUse (no approval): card sent, no wait; checked in source 2026-11-05 (registry.rs default pre_tool_use_payload)"]
+    },
+    "codebuddy": {
+      "title": "CodeBuddy Code",
+      "npm": "@tencent-ai/codebuddy-code",
+      "version_command": ["codebuddy", "--version"],
+      "baseline": {"version": "2.180.0", "evidence": "live", "note": "2026-11-02/05: hooks docs and the npm bundle read (executePermissionRequestHooks, permissionRequestHookDecision: Claude Code's output shape); live 2026-11-05 on Windows with the owner's phone (international account): PermissionRequest fires (missing from the /hooks add menu, works from settings.json), hooks run through Git Bash so paths must be POSIX-quoted, allow from the phone ran the command, Stop carries last_assistant_message. Not checked: deny, timeout cap, whether its own prompt shows while the hook waits"},
+      "updates": {"mode": "auto", "default_on": true, "opt_out": "settings autoUpdates=false or env DISABLE_AUTOUPDATER=1 (from its bundle/CHANGELOG)", "installs": "npm", "source": "https://www.codebuddy.ai/docs/cli/hooks", "checked": "2026-11-05"},
+      "support": {"policy": "latest", "floor": "2.97.0", "floor_basis": "its CHANGELOG: PermissionRequest hook added in 2.97.0 (2026-05-13); read, not tested", "shapes": []},
+      "docs": {
+        "hooks": "https://www.codebuddy.ai/docs/cli/hooks",
+        "changelog": "https://www.npmjs.com/package/@tencent-ai/codebuddy-code?activeTab=code (CHANGELOG.md)"
+      },
+      "config": {"file": "~/.codebuddy/settings.json (hooks key; changed hooks apply after review in /hooks)", "env": "CODEBUDDY_CONFIG_DIR (bundle only, undocumented)"},
+      "hooks": {
+        "PermissionRequest": {"role": "permission", "matcher": "*", "timeout_s": 1900},
+        "PostToolUse": {"role": "posttool", "matcher": "*", "timeout_s": 15},
+        "UserPromptSubmit": {"role": "working", "timeout_s": 15},
+        "Stop": {"role": "idle", "timeout_s": 15}
+      },
+      "input_fields": ["tool_name", "tool_input", "cwd", "session_id", "transcript_path", "tool_use_id", "permission_suggestions"],
+      "output": {
+        "allow": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}},
+        "deny": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "..."}}}
+      },
+      "no_opinion": "empty stdout, exit 0: CodeBuddy shows its own dialog",
+      "watch": ["PermissionRequest (undocumented on the hooks page)", "hookSpecificOutput", "/hooks review after settings changes", "hook timeout (default 60 s, cap not found)", "does it show its own prompt while the hook runs (pc window)", "Windows shell (Git Bash / pwsh)", "auto-review mode calls the hook", "does it import Claude Code hooks (double cards)"]
+    },
+    "crush": {
+      "title": "Crush",
+      "npm": "@charmland/crush",
+      "version_command": ["crush", "--version"],
+      "baseline": {"version": "0.99.0", "evidence": "live", "note": "2026-11-05: docs/hooks/README.md and tool sources read (payload is Claude-like, tool names lower case: bash, edit, multiedit, write, download, fetch, web_fetch, question); live 2026-11-05 on Windows with the owner's phone (Gemini model): crushrc block loaded, PreToolUse sent the bash call, allow from the phone ran it without Crush's own prompt, TurnEnd carried last_assistant_message. A provider error ends the turn with StopFailure, not TurnEnd. Not checked: deny, a long wait, question tool"},
+      "updates": {"mode": "unknown", "default_on": null, "opt_out": "no self-update found in its docs", "installs": "npm, Homebrew, Go, WinGet, Scoop", "source": "https://github.com/charmbracelet/crush/blob/main/README.md", "checked": "2026-11-05"},
+      "support": {"policy": "floor", "floor": "0.99.0", "floor_basis": "its releases: PreToolUse since 0.63 (2026-04-27), crushrc `hook add` since 0.88, TurnStart/TurnEnd since 0.99 (2026-10-29); read, not tested", "shapes": []},
+      "docs": {
+        "hooks": "https://github.com/charmbracelet/crush/blob/main/docs/hooks/README.md",
+        "changelog": "https://github.com/charmbracelet/crush/releases"
+      },
+      "config": {"file": "~/.config/crush/crushrc (%USERPROFILE%\\.config\\crush\\crushrc on Windows; our lines between marker comments)", "env": "XDG_CONFIG_HOME"},
+      "hooks": {
+        "PreToolUse": {"role": "permission", "matcher": "^(bash|edit|multiedit|write|download|fetch|web_fetch|lsp_rename|lsp_replace_symbol|question|mcp_.*)$", "timeout_s": 1900},
+        "PostToolUse": {"role": "posttool", "matcher": "^question$", "timeout_s": 15},
+        "TurnStart": {"role": "working", "timeout_s": 15},
+        "TurnEnd": {"role": "idle", "timeout_s": 15},
+        "StopFailure": {"role": "idle", "timeout_s": 15}
+      },
+      "input_fields": ["event", "hook_event_name", "session_id", "cwd", "tool_name", "tool_input", "tool_use_id", "last_assistant_message"],
+      "output": {
+        "allow": {"decision": "allow"},
+        "deny": {"decision": "deny", "reason": "..."}
+      },
+      "no_opinion": "empty stdout, exit 0: Crush's own permission flow decides (it also fires for tools Crush would let through unasked)",
+      "watch": ["PreToolUse fires before its permission check, for allow-listed tools too", "decision allow/deny", "exit 2 = deny, 49 = halt", "hook timeout (default 30 s; on timeout the call proceeds)", "subagents fire no hooks (outer call does)", "crushrc shell quoting of Windows paths", "question tool (card only)", "legacy JSON hooks"]
+    },
+    "opencode": {
+      "title": "opencode",
+      "npm": "@opencode/cli",
+      "version_command": ["opencode", "--version"],
+      "baseline": {"version": "2.2.5", "evidence": "live", "note": "2026-10-29 spike on 2.2.2 (live, isolated config): plugin loads from plugins/*.ts, evaluate/deny blocks, permission.list + permission.reply('once') approves a pending question, waits >=200 s. 2026-11-05: our plugin (opencode_plugin.ts) written from the V2 docs and schema (permission.asked / permission.replied / session.execution.* events); loaded and events checked live on 2.2.5 (2026-11-05: no session.status, a types filter delivered nothing). 2026-11-05 on 2.2.5 with the owner's phone (TUI, shell ask rule): allow from the phone ran the command and closed opencode's question; an answer in opencode took the card off the phone (resolved-on-pc via fp). Not checked: deny from the phone, timeout V1 (opencode-ai) is not supported"},
+      "updates": {"mode": "unknown", "default_on": null, "opt_out": "autoupdate in opencode.jsonc (true/false/'notify'; default not stated)", "installs": "npm @opencode/cli, curl install script, Homebrew anomalyco/tap/opencode-v2", "source": "https://opencode.ai/docs/config", "checked": "2026-10-29"},
+      "support": {"policy": "floor", "floor": "2.2.2", "floor_basis": "the version spiked live 2026-10-29; the V2 plugin API is young (V1 and V2 ship side by side)", "shapes": ["V2 plugin events (permission.asked {id, sessionID, action, resources, metadata})"]},
+      "docs": {
+        "hooks": "https://github.com/anomalyco/opencode/blob/dev/services/www/src/docs/content/build/plugins/server.mdx",
+        "changelog": "https://github.com/anomalyco/opencode/releases"
+      },
+      "config": {"file": "~/.config/opencode/plugins/horncall.ts (our own file; permission rules untouched)", "env": "OPENCODE_CONFIG_DIR"},
+      "hooks": {
+        "permission.asked (plugin event)": {"role": "permission", "timeout_s": 1900},
+        "permission.replied (plugin event)": {"role": "posttool", "timeout_s": 15},
+        "session.execution.started (plugin event)": {"role": "working", "timeout_s": 15},
+        "session.execution.succeeded/failed (plugin event)": {"role": "idle", "timeout_s": 15}
+      },
+      "input_fields": ["request_id", "session_id", "cwd", "tool_name", "tool_input"],
+      "output": {
+        "allow": {"decision": "allow"},
+        "deny": {"decision": "deny", "reason": "..."}
+      },
+      "no_opinion": "empty stdout: the plugin doesn't reply, opencode's own question stays open",
+      "watch": ["V2 plugin API (export default {id, setup})", "event names permission.asked / permission.replied / session.execution.*", "Permission.Reply once/always/reject", "default permissions * = allow (nothing is asked, nothing reaches the phone)", "plugin tools bypass permissions (#50652)", "V1 (opencode-ai) has no working permission hook", "Bun/Node child_process on Windows"]
     }
   }
 }
