@@ -86,6 +86,8 @@ class Config:
     # Where no PC window can open (SSH, no desktop), how long those agents wait for the phone before asking in the
     # terminal themselves. 0 = phone only, for the whole timeout_s.
     noscreen_wait_s: int = 120
+    # Unpacked-ZIP installs: once a day a task end installs a new signed release (autoupdate.py). Opt-in.
+    auto_update: bool = False
 
     @classmethod
     def load(cls) -> "Config | None":

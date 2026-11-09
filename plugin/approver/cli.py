@@ -81,6 +81,9 @@ def cmd_pair(args) -> None:
     print(f"\nDevice: {config.device_name}   Server: {config.server}")
     print(f"For the next {phones.PAIRING_WINDOW_S // 60} min a new phone joins with its first answer "
           "(answer one order or send a test).")
+    from . import autoupdate
+    if autoupdate.describe() == "off":
+        print(f"\nTip: let new Horncall versions install themselves: {command()} autoupdate on")
 
 
 def cmd_unpair(args) -> None:
@@ -214,6 +217,12 @@ def cmd_status(args) -> None:
     from . import compat
     for warning in compat.floor_warnings([a.split(" ")[0] for a in agents]):
         print(f"warning: {warning}")
+    if "plugin" in claude and not setup.git_bash_found():
+        print("warning: Claude Code runs the plugin's hooks with Git Bash, which is missing here — install Git for "
+              f"Windows (git-scm.com), or use hooks in settings.json instead: {command()} install claude")
+    from . import autoupdate
+    auto = autoupdate.describe()
+    print(f"auto-update: {auto}" + (f"  (turn on: {command()} autoupdate on)" if auto == "off" else ""))
     latest =(Ntfy(config.server).latest_versions() or {}).get("plugin", {})
     if _newer(latest.get("version", ""), __version__):
         print(f"update: plugin {latest['version']} is available — run: {command()} update")
@@ -337,10 +346,32 @@ def cmd_update(args) -> None:
     from . import update
     from .config import DEFAULT_SERVER
     config = Config.load()
+    if args.auto:
+        # Started in the background by the launcher (autoupdate.py): only a ZIP install with the switch on, and
+        # whatever happens goes to hook.log, never to a terminal.
+        from . import autoupdate
+        from .hook import log
+        if autoupdate.kind() != "zip" or not autoupdate.is_on():
+            return
+        said: list[str] = []
+        try:
+            code = update.run(config.server if config else DEFAULT_SERVER, say=said.append)
+        except (update.UpdateError, OSError) as exc:
+            code, said = 1, [f"failed, nothing installed: {exc}"]
+        log("auto-update", code=code, said=" / ".join(said)[:300])
+        return
     try:
         sys.exit(update.run(config.server if config else DEFAULT_SERVER))
     except (update.UpdateError, OSError) as exc:
         sys.exit(f"Update failed, nothing installed: {exc}")
+
+
+def cmd_autoupdate(args) -> None:
+    from . import autoupdate
+    if args.switch is None:
+        print(f"automatic updates: {autoupdate.describe()}")
+        return
+    print(autoupdate.switch(args.switch == "on"))
 
 
 def cmd_setup(args) -> None:
@@ -377,8 +408,12 @@ def build_parser(prog: str = "approver") -> argparse.ArgumentParser:
 
     sub.add_parser("setup", help="guided setup: hook up the AI tools, pair the phone, send a test")\
         .set_defaults(func=cmd_setup)
-    sub.add_parser("update", help="install the newest signed plugin release from the relay")\
-        .set_defaults(func=cmd_update)
+    p = sub.add_parser("update", help="install the newest signed plugin release from the relay")
+    p.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)  # the launcher's daily background run
+    p.set_defaults(func=cmd_update)
+    p = sub.add_parser("autoupdate", help="new plugin versions install themselves (on/off; no argument: show)")
+    p.add_argument("switch", nargs="?", choices=["on", "off"])
+    p.set_defaults(func=cmd_autoupdate)
     sub.add_parser("unpair", help="delete the key").set_defaults(func=cmd_unpair)
 
     p = sub.add_parser("on", help="forward permission requests to the phone")

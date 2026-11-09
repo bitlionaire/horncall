@@ -66,6 +66,19 @@ def claude_plugin_installed() -> bool:
     return claude_plugin_state() != "missing"
 
 
+def git_bash_found() -> bool:
+    """The plugin's hooks are shell commands (`sh …/run.sh`): Claude Code runs them with Git Bash on Windows,
+    with PowerShell when Git Bash is missing — and there `sh` doesn't exist. Elsewhere sh is always there."""
+    if os.name != "nt":
+        return True
+    candidates = [os.environ.get("CLAUDE_CODE_GIT_BASH_PATH"), shutil.which("bash")]
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA") and
+                 str(Path(os.environ["LOCALAPPDATA"]) / "Programs")):
+        if base:
+            candidates.append(str(Path(base) / "Git" / "bin" / "bash.exe"))
+    return any(c and Path(c).is_file() for c in candidates)
+
+
 def install_claude_plugin(run=subprocess.run) -> str:
     claude = shutil.which("claude")
     if not claude:
@@ -201,6 +214,9 @@ def run(ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
     statusline = claude.found and install.state("claude-statusline") != "here" and (
         install.state("claude-statusline") == "elsewhere"
         or yes("   Show Claude's plan limit (5 h / week) as HP on the phone? It adds a small status line in Claude Code. [Y/n] "))
+    from . import autoupdate
+    auto_update = autoupdate.kind() in ("marketplace", "zip") and not autoupdate.is_on() and yes(
+        "   Install new Horncall versions automatically (signed releases only)? [Y/n] ")
     if chosen or statusline:
         say("\n   This will change:")
         for t in chosen:
@@ -233,6 +249,11 @@ def run(ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
         say("   New pairing key created.")
     phones.open_pairing(config)
     config.save()
+    if auto_update:  # needs the saved config (ZIP installs keep the switch there)
+        try:
+            notes.append(autoupdate.switch(True))
+        except Exception as exc:
+            say(f"   ✗ automatic updates: {exc}")
     if config.phones:
         say(f"   Already paired with {len(config.phones)} phone(s). A new phone can join in the next 10 min.")
     uri = pairing_uri(config)

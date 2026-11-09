@@ -26,6 +26,7 @@ On Windows, if `python` is not found, try `py -3`.
 | `replies on` / `replies off` | when a task ends, also send the first lines of the AI's answer (plain text, max 240 chars, encrypted) so the phone shows them with "mission complete". Off by default. |
 | `pcdialog on` / `pcdialog off` | Codex, Gemini and Copilot show nothing of their own while the phone is asked; with this on (default) the same order also opens a small window on the PC, and the first answer counts. |
 | `phones` / `phones forget <key start>` | lists trusted phones (key, added, last answer); `forget` removes one, e.g. an old phone or an uninstalled app (never the last one). |
+| `autoupdate on` / `off` | new Horncall versions install themselves (marketplace: Claude Code's own auto-update; ZIP: a signed release once a day). No argument shows the state. |
 | `update` | downloads the newest plugin release from the relay, checks its signature and installs it over this folder (pairing kept). Tell the user to restart Claude Code afterwards. |
 | `unpair` | deletes the key. |
 

@@ -109,6 +109,28 @@ def statusline() -> int:
     return run()
 
 
+AUTO_UPDATE_EVERY_S = 24 * 3600  # approver.autoupdate.CHECK_EVERY_S
+
+
+def maybe_auto_update() -> None:
+    """At a task end, at most once a day: `approver update --auto` in the background, if the user switched
+    automatic updates on (`approver autoupdate on`, ZIP installs). It checks the install kind and the release
+    signature itself and logs to hook.log. Never delays or fails the hook."""
+    try:
+        if not json.loads((HOME / "config.json").read_text(encoding="utf-8")).get("auto_update"):
+            return
+        stamp = HOME / "autoupdate-checked"
+        if stamp.exists() and time.time() - stamp.stat().st_mtime < AUTO_UPDATE_EVERY_S:
+            return
+        stamp.touch()
+        env = dict(os.environ, PYTHONPATH=str(PLUGIN_ROOT), PYTHONIOENCODING="utf-8")
+        detached = {"creationflags": 0x00000008 | 0x00000200} if os.name == "nt" else {"start_new_session": True}
+        subprocess.Popen([str(venv_python()), "-m", "approver", "update", "--auto"], env=env, cwd=str(PLUGIN_ROOT),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **detached)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 def main() -> int:
     args = sys.argv[1:]
     if args[:1] == ["statusline"]:
@@ -124,6 +146,17 @@ def main() -> int:
         run_in_venv(args)
         return 0
     if args[:1] in (["hook"], ["event"]):
+        if args[:1] == ["hook"]:
+            # First thing, before any check: shows whether the agent called us at all (a question once never
+            # reached the phone and left no trace, 2026-11-09). Only the agent name — the input stays unread here.
+            try:
+                with open(HOME / "hook.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": "hook-called",
+                                        "agent": args[1] if len(args) > 1 else "claude", "pid": os.getpid()}) + "\n")
+            except OSError:
+                pass
+        if args[:1] == ["event"] and args[-1:] == ["idle"] and venv_python().exists():
+            maybe_auto_update()
         if not venv_python().exists() or not capturing and not is_on():
             return 0  # fast path: let the agent show its normal dialog / carry on
         run_in_venv(args)

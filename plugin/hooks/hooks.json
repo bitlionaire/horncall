@@ -6,8 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/approver_launcher.py", "hook"],
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" hook",
             "timeout": 1900
           }
         ]
@@ -19,8 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/approver_launcher.py", "posttool", "claude"],
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" posttool claude",
             "timeout": 15
           }
         ]
@@ -32,8 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/approver_launcher.py", "posttool", "claude"],
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" posttool claude",
             "timeout": 15
           }
         ]
@@ -44,8 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/approver_launcher.py", "event", "claude", "working"],
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" event claude working",
             "timeout": 15
           }
         ]
@@ -56,8 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/approver_launcher.py", "event", "claude", "idle"],
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" event claude idle",
             "timeout": 15
           }
         ]

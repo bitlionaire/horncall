@@ -103,7 +103,11 @@ def run(server: str, root: Path = INSTALL_ROOT, fetch=None, say=print) -> int:
         say("Installed with pip/pipx — update with: pipx upgrade horncall  (or: uv tool upgrade horncall)")
         return 1
     if kind == "marketplace":
-        say("Installed from the Claude Code marketplace — in Claude type: /plugin marketplace update horncall")
+        # A marketplace refresh alone leaves installed plugins as they are (Claude Code docs, plugins/install).
+        say("Installed from the Claude Code marketplace — in a terminal run:\n"
+            "  claude plugin marketplace update horncall\n"
+            "  claude plugin update horncall@horncall\n"
+            "then restart Claude Code. Automatic updates: /plugin → Marketplaces → horncall → Enable auto-update.")
         return 1
     latest = Ntfy(server).latest_versions() or {}
     plugin = latest.get("plugin") or {}
@@ -121,7 +125,6 @@ def run(server: str, root: Path = INSTALL_ROOT, fetch=None, say=print) -> int:
         return 1
     install_zip(data, root)
     say(f"Updated Horncall plugin {__version__} → {version}. Restart Claude Code (and other AI tools).")
-    say("If the release notes mention new hooks, run setup.cmd once more.")
     return 0
 
 

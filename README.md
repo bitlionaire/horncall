@@ -39,13 +39,18 @@ Keep the agents up to date. Horncall supports these versions and newer; older on
 Pick one. All of them end with the same pairing step: `setup` shows a QR code to scan in the app, in the
 browser or, over SSH and on headless servers, right in the terminal (`horncall pair` draws it there too).
 
-**Claude Code plugin** (Claude Code keeps it up to date):
+**Claude Code plugin**:
 
 ```
 /plugin marketplace add bitlionaire/horncall
 /plugin install horncall@horncall
 /horncall:approver setup
+/horncall:approver autoupdate on
 ```
+
+Claude Code updates plugins from other marketplaces only when you turn it on: `autoupdate on` does that for
+Horncall (or `/plugin` → Marketplaces → horncall → Enable auto-update). Needs Python 3.10+ (on Windows the
+`py` launcher from python.org is enough) and, on Windows, Git for Windows (Claude Code runs plugin hooks with Git Bash).
 
 **pipx / uv** (a `horncall` command; hooks for every agent, Claude Code via its `settings.json`):
 

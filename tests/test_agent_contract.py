@@ -5,6 +5,9 @@ How samples are made and what `expect` means: docs/AGENTS.md.
 
 import io
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -62,9 +65,49 @@ def test_every_agent_hooks_the_events_that_take_a_card_off_the_phone():
     plugin_hooks = json.loads((ROOT / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
     for event in ("PostToolUse", "PostToolUseFailure"):
         assert event in install.CLAUDE_HOOKS and event in plugin_hooks
-        assert plugin_hooks[event][0]["hooks"][0]["args"][1:] == ["posttool", "claude"]
+        assert plugin_hooks[event][0]["hooks"][0]["command"].endswith("/hooks/run.sh\" posttool claude")
         assert install.CLAUDE_HOOKS[event][1] == "posttool claude"
     assert set(plugin_hooks) == set(install.CLAUDE_HOOKS)  # the plugin and settings.json install stay the same
+    for event, (_, args, timeout) in install.CLAUDE_HOOKS.items():
+        h = plugin_hooks[event][0]["hooks"][0]
+        args = "hook" if args == "hook claude" else args  # the plugin's permission hook: claude is the default agent
+        assert h["command"] == f'sh "${{CLAUDE_PLUGIN_ROOT}}/hooks/run.sh" {args}' and h["timeout"] == timeout
+
+
+def test_plugin_hooks_never_depend_on_a_bare_python():
+    """`python` on PATH may be the Microsoft Store stub (only `py` works): every hook failed on a user's PC
+    (2026-11-09). The plugin's hooks go through run.sh, which finds a real Python 3."""
+    plugin_hooks = json.loads((ROOT / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    for entries in plugin_hooks.values():
+        for h in (h for e in entries for h in e["hooks"]):
+            assert "args" not in h and not h["command"].startswith(("python", "py "))
+
+
+@pytest.mark.skipif(not shutil.which("sh") and not Path(r"C:\Program Files\Git\bin\bash.exe").exists(),
+                    reason="no POSIX shell")
+def test_run_sh_skips_the_store_stub_and_falls_back_to_py(tmp_path):
+    bash = shutil.which("sh") if os.name != "nt" else r"C:\Program Files\Git\bin\bash.exe"
+    stub_dir = tmp_path / "Microsoft" / "WindowsApps"
+    stub_dir.mkdir(parents=True)
+    for name in ("python", "python3"):
+        (stub_dir / name).write_text('#!/bin/sh\necho "Python was not found" >&2\nexit 9009\n', newline="\n")
+        (stub_dir / name).chmod(0o755)
+    real = tmp_path / "real"
+    real.mkdir()
+    # Stands in for `py` (Windows) — prints which interpreter run.sh picked and the arguments it got.
+    (real / "py").write_text('#!/bin/sh\necho "py $*"\n', newline="\n")
+    (real / "py").chmod(0o755)
+    run_sh = str(ROOT / "plugin" / "hooks" / "run.sh")
+    to_posix = lambda p: subprocess.run([bash, "-c", f'cygpath -u "{p}" 2>/dev/null || echo "{p}"'],  # noqa: E731
+                                        capture_output=True, text=True).stdout.strip()
+    path = f"{to_posix(stub_dir)}:{to_posix(real)}:/usr/bin:/bin"
+    out = subprocess.run([bash, "-c", f'PATH="{path}" sh "$0" hook claude', run_sh], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.startswith("py -3 ") and out.stdout.rstrip().endswith("approver_launcher.py hook claude")
+    # No Python at all: a clear message, a non-blocking failure.
+    out = subprocess.run([bash, "-c", f'PATH="{to_posix(stub_dir)}:/usr/bin:/bin" sh "$0" hook', run_sh],
+                         capture_output=True, text=True)
+    assert out.returncode == 1 and "Python 3 not found" in out.stderr
     assert install.GEMINI_HOOKS["AfterTool"][1] == "posttool gemini"
     assert install.CODEX_HOOKS["PostToolUse"][1] == "posttool codex"
     copilot = install.copilot_file_content()["hooks"]

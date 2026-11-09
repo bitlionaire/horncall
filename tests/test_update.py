@@ -45,7 +45,7 @@ def test_pip_and_marketplace_installs_point_to_their_own_updater(tmp_path, monke
     assert update.run("https://x", pip_root, say=said.append) == 1 and "pipx upgrade horncall" in said[-1]
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / ".claude"))
     cached = installed(tmp_path / ".claude" / "plugins" / "cache")
-    assert update.run("https://x", cached, say=said.append) == 1 and "/plugin marketplace update" in said[-1]
+    assert update.run("https://x", cached, say=said.append) == 1 and "claude plugin update horncall@horncall" in said[-1]
 
 
 def fake_relay(monkeypatch, version, sig):
