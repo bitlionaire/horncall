@@ -138,7 +138,8 @@ def gemini_settings() -> Path:
     return Path(os.environ.get("GEMINI_CLI_HOME") or Path.home() / ".gemini") / "settings.json"
 
 
-GEMINI_MATCHER = "run_shell_command|write_file|replace|mcp_.*"  # MCP: agents.Gemini decides which ones
+# MCP: agents.Gemini decides which ones. ask_user (Gemini 0.28+): its question to the user, shown on the phone.
+GEMINI_MATCHER = "run_shell_command|write_file|replace|ask_user|mcp_.*"
 
 # event → (matcher, command args after the launcher, timeout ms, description)
 GEMINI_HOOKS = {
@@ -362,12 +363,109 @@ CLAUDE_HOOKS = {
 }
 
 
+# Task start/end only report to the phone: Claude runs them in the background ("async"), so a slow network or a
+# slow shell never holds up the prompt ("Running UserPromptSubmit hooks…"). Permission hooks must block.
+CLAUDE_ASYNC = {"UserPromptSubmit", "Stop"}
+
+
 def claude_definitions() -> dict:
     out = {}
     for event, (matcher, args, timeout) in CLAUDE_HOOKS.items():
-        definition = {"hooks": [{"type": "command", "command": hook_command("claude", args), "timeout": timeout}]}
+        hook = {"type": "command", "command": hook_command("claude", args), "timeout": timeout}
+        if event in CLAUDE_ASYNC:
+            hook["async"] = True
+        definition = {"hooks": [hook]}
         out[event] = {"matcher": matcher, **definition} if matcher else definition
     return out
+
+
+# --- Claude Code plugin, ZIP install on Windows: hooks.json without a shell -------------------------------
+# The shipped hooks.json runs `sh run.sh …`, which Claude Code starts through Git Bash on Windows. Git Bash
+# sometimes hangs there for the whole 15 s timeout (2026-11-10 and 11-11 on the owner's PC: every prompt
+# waited, no status reached the phone). A ZIP install knows its own folder and Python, so setup/update write
+# hooks.json in Claude's exec form instead: Python started directly with an absolute path, no shell at all.
+# Installs from GitHub keep run.sh: one hooks.json for everyone can't hold a machine's paths.
+
+def hook_python() -> Path:
+    """A real Python 3 for the hooks: the base interpreter behind our venv (never the Microsoft Store stub,
+    which can't have run this code)."""
+    return Path(getattr(sys, "_base_executable", None) or sys.executable).resolve()
+
+
+def plugin_exec_hooks(python: Path, launcher: Path) -> dict:
+    out = {}
+    for event, (matcher, args, timeout) in CLAUDE_HOOKS.items():
+        hook = {"type": "command", "command": str(python), "args": [str(launcher), *args.split()], "timeout": timeout}
+        if event in CLAUDE_ASYNC:
+            hook["async"] = True
+        group = {"hooks": [hook]}
+        out[event] = [{"matcher": matcher, **group} if matcher else group]
+    return {"hooks": out}
+
+
+def claude_plugin_copy(root: Path) -> Path | None:
+    """The folder Claude Code really runs the plugin from (its own copy under ~/.claude/plugins/cache), when
+    its horncall marketplace is the folder `root` (a GitHub install or another copy is left alone)."""
+    plugins = claude_settings().parent / "plugins"
+    try:
+        source = (_load_json(plugins / "known_marketplaces.json").get("horncall") or {}).get("source") or {}
+        if not source.get("path") or Path(source["path"]).resolve() != root.resolve():
+            return None
+        installed = _load_json(plugins / "installed_plugins.json")
+        entries = (installed.get("plugins") or installed).get("horncall@horncall") or []
+        path = Path(entries[0]["installPath"])
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return None
+    return path if (path / "hooks" / "hooks.json").is_file() else None
+
+
+def write_direct_hooks(root: Path, python: Path | None = None) -> list[Path]:
+    """Writes the exec-form hooks.json into the ZIP install at `root` and into Claude's copy of the plugin.
+    Windows only (elsewhere `sh` is always there). Returns the files written."""
+    if os.name != "nt":
+        return []
+    python = python or hook_python()
+    launcher = root / "plugin" / "hooks" / "approver_launcher.py"
+    if not python.is_file() or not launcher.is_file():
+        return []
+    text = json.dumps(plugin_exec_hooks(python, launcher), indent=2) + "\n"
+    written = []
+    for folder in (root / "plugin", claude_plugin_copy(root)):
+        if folder is None:
+            continue
+        target = folder / "hooks" / "hooks.json"
+        try:
+            target.write_text(text, encoding="utf-8")
+            written.append(target)
+        except OSError:
+            pass
+    return written
+
+
+def direct_hooks_python(hooks_json: Path) -> Path | None:
+    """The Python an exec-form hooks.json starts (None for the shell form)."""
+    try:
+        hooks = _load_json(hooks_json).get("hooks", {})
+        hook = hooks["PermissionRequest"][0]["hooks"][0]
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return None
+    return Path(hook["command"]) if hook.get("args") else None
+
+
+def ensure_direct_hooks() -> list[Path]:
+    """Puts the direct form back where it is missing: an update made by an older version (which didn't know
+    it) or Claude refreshing its copy from a package left the shell form. Cheap: two small files read."""
+    if os.name != "nt":
+        return []
+    from . import update
+    root = update.INSTALL_ROOT
+    if update.how_installed(root) != "zip":
+        return []
+    copy = claude_plugin_copy(root)
+    targets = [root / "plugin" / "hooks" / "hooks.json"] + ([copy / "hooks" / "hooks.json"] if copy else [])
+    if all((python := direct_hooks_python(t)) is not None and python.is_file() for t in targets):
+        return []
+    return write_direct_hooks(root)
 
 
 def install_claude() -> Path:

@@ -86,12 +86,22 @@ def install_claude_plugin(run=subprocess.run) -> str:
     steps = [["plugin", "marketplace", "add", str(MARKETPLACE_ROOT)], ["plugin", "install", "horncall@horncall"]]
     if claude_plugin_state() == "elsewhere":  # an older copy in another folder: point Claude at this one
         steps.insert(0, ["plugin", "marketplace", "remove", "horncall"])
+    direct_hooks()  # before the install, so Claude's copy is taken with them
     for args in steps:
         result = run([claude, *args], capture_output=True, text=True, timeout=120)
         # "already" = installed earlier: fine.
         if result.returncode != 0 and "already" not in (result.stdout + result.stderr).lower():
             raise RuntimeError((result.stderr or result.stdout).strip()[:300])
+    direct_hooks()  # "already" installed: Claude kept its old copy
     return "Claude Code: plugin installed — restart Claude Code"
+
+
+def direct_hooks() -> list[Path]:
+    """ZIP install on Windows: hooks.json without Git Bash (install.write_direct_hooks)."""
+    from . import update
+    if update.how_installed(MARKETPLACE_ROOT) != "zip":
+        return []
+    return install.write_direct_hooks(MARKETPLACE_ROOT)
 
 
 def uninstall_claude_plugin(run=subprocess.run) -> str:

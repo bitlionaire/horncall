@@ -135,6 +135,37 @@ def test_install_crush_keeps_the_users_lines_and_quotes_paths(tmp_path, monkeypa
     assert not install.crush_installed()
 
 
+def test_gemini_ask_user_is_a_card_for_the_phone():
+    """Gemini 0.28+ ask_user (docs: geminicli.com/docs/tools/ask-user): shown on the phone, answered in Gemini."""
+    gemini = agents.get("gemini")
+    q = gemini.parse({"tool_name": "ask_user", "cwd": "/r", "session_id": "s", "tool_input": {"questions": [
+        {"question": "Which database?", "header": "DB", "type": "choice", "multiSelect": False,
+         "options": [{"label": "SQLite", "description": "file"}, {"label": "Postgres", "description": "server"}]},
+        {"question": "Name of the table?", "header": "Table", "type": "text"}]}})
+    assert q.tool == "AskUserQuestion" and q.notify_only
+    assert q.tool_input["questions"] == [
+        {"header": "DB", "question": "Which database?",
+         "options": [{"label": "SQLite", "description": "file"}, {"label": "Postgres", "description": "server"}]},
+        {"header": "Table", "question": "Name of the table?"}]
+    assert "ask_user" in install.GEMINI_MATCHER.split("|")
+
+
+def test_opencode_question_is_a_card_for_the_phone():
+    """opencode 2.2.5 question tool, as session.tool.called carried it (captured 2026-11-11)."""
+    oc = agents.get("opencode")
+    raw = {"hook_event_name": "question.asked", "request_id": "chatcmpl-tool-b794", "session_id": "ses_e347",
+           "cwd": "C:/x", "tool_name": "question", "tool_input": {"questions": [{
+               "header": "Napoje", "multiple": False, "question": "Herbata czy kawa?",
+               "options": [{"description": "Wybór nr 1", "label": "Herbata"}, {"description": "Wybór nr 2", "label": "Kawa"}]}]}}
+    q = oc.parse(raw)
+    assert q.tool == "AskUserQuestion" and q.notify_only and not q.answered_later
+    assert q.tool_input["questions"] == [{"header": "Napoje", "question": "Herbata czy kawa?", "options": [
+        {"description": "Wybór nr 1", "label": "Herbata"}, {"description": "Wybór nr 2", "label": "Kawa"}]}]
+    # The tool's end sends the same payload: same fingerprint, so the card leaves the phone.
+    again = oc.parse(raw)
+    assert protocol.order_fp(again.session_id, again.tool, again.tool_input) == protocol.order_fp(q.session_id, q.tool, q.tool_input)
+
+
 def test_crush_adapter_names_tools_and_leaves_reads_alone():
     crush = agents.get("crush")
     hi = crush.parse({"tool_name": "bash", "tool_input": {"command": "rm -rf build"}, "cwd": "/r", "session_id": "s"})

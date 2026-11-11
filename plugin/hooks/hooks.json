@@ -42,7 +42,8 @@
           {
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" event claude working",
-            "timeout": 15
+            "timeout": 15,
+            "async": true
           }
         ]
       }
@@ -53,7 +54,8 @@
           {
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\" event claude idle",
-            "timeout": 15
+            "timeout": 15,
+            "async": true
           }
         ]
       }

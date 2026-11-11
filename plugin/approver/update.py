@@ -124,6 +124,8 @@ def run(server: str, root: Path = INSTALL_ROOT, fetch=None, say=print) -> int:
         say("The downloaded package is NOT signed by the Horncall release key — nothing was changed.")
         return 1
     install_zip(data, root)
+    from . import install
+    install.write_direct_hooks(root)  # the package's hooks.json runs Git Bash: back to the direct form
     say(f"Updated Horncall plugin {__version__} → {version}. Restart Claude Code (and other AI tools).")
     return 0
 

@@ -102,6 +102,39 @@ def run_in_venv(args: list) -> int:
     return subprocess.call([str(venv_python()), "-m", "approver", *args], env=env, cwd=str(PLUGIN_ROOT))
 
 
+# No console for background work: DETACHED_PROCESS alone wasn't enough — the venv's python.exe only redirects to
+# the real interpreter, which then got a new, visible console window (seen from opencode, 2026-11-11). So the
+# GUI-subsystem pythonw.exe (never a console) where it exists, and CREATE_NO_WINDOW instead of a detached console.
+DETACHED = {"creationflags": 0x08000000 | 0x00000200} if os.name == "nt" else {"start_new_session": True}
+
+
+def background_python() -> Path:
+    if os.name == "nt" and (VENV / "Scripts" / "pythonw.exe").exists():
+        return VENV / "Scripts" / "pythonw.exe"
+    return venv_python()
+
+
+def run_event_in_background(args: list) -> None:
+    """Task start/end (`event …`) only tell the phone: the venv's Python (~1 s of imports) and the network
+    send run in a detached process, and the hook returns at once, so the agent's prompt never waits on
+    them (a slow mobile network once held every prompt for 15 s, 2026-11-10). The hook's JSON goes to a
+    file the background process reads and deletes; HORNCALL_EVENT_T keeps the moment the agent called,
+    so a late start never overwrites a newer end on the phone (approver.hook.run_event)."""
+    t = time.time()
+    try:
+        data = sys.stdin.buffer.read()
+        inbox = HOME / "events"
+        inbox.mkdir(parents=True, exist_ok=True)
+        path = inbox / f"{t:.6f}-{os.getpid()}.json"
+        path.write_bytes(data)
+        env = dict(os.environ, PYTHONPATH=str(PLUGIN_ROOT), PYTHONIOENCODING="utf-8", HORNCALL_CWD=os.getcwd(),
+                   HORNCALL_EVENT_T=repr(t), HORNCALL_EVENT_INPUT=str(path))
+        subprocess.Popen([str(background_python()), "-m", "approver", *args], env=env, cwd=str(PLUGIN_ROOT),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **DETACHED)
+    except (OSError, ValueError):
+        pass
+
+
 def statusline() -> int:
     """Claude Code status line: the stdlib-only code lives in the package (shared with pip installs)."""
     sys.path.insert(0, str(PLUGIN_ROOT))
@@ -124,10 +157,22 @@ def maybe_auto_update() -> None:
             return
         stamp.touch()
         env = dict(os.environ, PYTHONPATH=str(PLUGIN_ROOT), PYTHONIOENCODING="utf-8")
-        detached = {"creationflags": 0x00000008 | 0x00000200} if os.name == "nt" else {"start_new_session": True}
-        subprocess.Popen([str(venv_python()), "-m", "approver", "update", "--auto"], env=env, cwd=str(PLUGIN_ROOT),
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **detached)
+        subprocess.Popen([str(background_python()), "-m", "approver", "update", "--auto"], env=env, cwd=str(PLUGIN_ROOT),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **DETACHED)
     except (OSError, ValueError, AttributeError):
+        pass
+
+
+def log_called(event: str, args: list) -> None:
+    """One line before anything else runs: the agent did call us (agent name, and the state for events)."""
+    fields = {"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event,
+              "agent": args[1] if len(args) > 1 else "claude", "pid": os.getpid()}
+    if args[:1] == ["event"] and len(args) > 2:
+        fields["state"] = args[2]
+    try:
+        with open(HOME / "hook.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps(fields) + "\n")
+    except OSError:
         pass
 
 
@@ -149,16 +194,15 @@ def main() -> int:
         if args[:1] == ["hook"]:
             # First thing, before any check: shows whether the agent called us at all (a question once never
             # reached the phone and left no trace, 2026-11-09). Only the agent name — the input stays unread here.
-            try:
-                with open(HOME / "hook.log", "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": "hook-called",
-                                        "agent": args[1] if len(args) > 1 else "claude", "pid": os.getpid()}) + "\n")
-            except OSError:
-                pass
+            log_called("hook-called", args)
         if args[:1] == ["event"] and args[-1:] == ["idle"] and venv_python().exists():
             maybe_auto_update()
         if not venv_python().exists() or not capturing and not is_on():
             return 0  # fast path: let the agent show its normal dialog / carry on
+        if args[:1] == ["event"] and not capturing:
+            log_called("event-called", args)
+            run_event_in_background(args)
+            return 0
         run_in_venv(args)
         return 0  # never fail the hook
     if args[:1] == ["setup"]:

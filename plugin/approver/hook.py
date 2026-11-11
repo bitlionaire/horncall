@@ -6,6 +6,7 @@ dialog in charge; printing a decision object answers the request.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -25,12 +26,20 @@ def decision_output(behavior: str, message: str | None = None) -> dict:
     return claude.allow() if behavior == "allow" else claude.deny(message or "")
 
 
+LOG_MAX_BYTES = 1_000_000  # then hook.log becomes hook.log.1 (the previous .1 goes): at most ~2 MB on disk
+
+
 def log(event: str, **fields) -> None:
     """Metadata-only log (no commands or file contents) — useful to verify the hook fires."""
     try:
         line = json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **fields})
         path = log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if path.stat().st_size > LOG_MAX_BYTES:
+                os.replace(path, path.with_name(path.name + ".1"))
+        except OSError:
+            pass  # no log yet, or another hook rotated it a moment ago
         with path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError:
@@ -304,9 +313,14 @@ def run_event(stdin: TextIO, agent: str, state_name: str, link_factory=Link) -> 
         # Field names and a short session id only: shows whether start and end report the same chat.
         log("event-shape", agent=adapter.name, state=state_name, keys=sorted(raw)[:30],
             session=str(session_id or "")[:8], transcript=Path(str(raw.get("transcript_path") or "")).name[:60])
+    called_at = _called_at()
+    if not _newest_for_session(str(session_id or "?"), called_at):
+        # A background sender that started late: the session already reported a newer start/end.
+        log("status-stale", agent=adapter.name, state=state_name)
+        return 0
     if state_name == "working":
         _resolve_session_markers(str(session_id) if session_id else None, adapter.name, config, link_factory)
-    now = int(time.time())
+    now = int(called_at)
     transcript = str(raw.get("transcript_path") or "")
     started, task_session = _task_clock(str(session_id or "?"), state_name, now, transcript)
     if task_session and task_session != str(session_id):
@@ -335,8 +349,40 @@ def run_event(stdin: TextIO, agent: str, state_name: str, link_factory=Link) -> 
         log("status", agent=adapter.name, state=state_name, worked_s=worked, session=status.get("session"),
             **({"reply_chars": len(status["reply"])} if "reply" in status else {}))
     except Exception as exc:
-        log("error", event="status", error=exc.__class__.__name__)
+        log("error", during="status", error=exc.__class__.__name__)
     return 0
+
+
+def _called_at() -> float:
+    """When the agent called the hook: the launcher's stamp for a background run, else now."""
+    try:
+        return float(os.environ["HORNCALL_EVENT_T"])
+    except (KeyError, ValueError):
+        return time.time()
+
+
+SEQ_KEEP_S = 7 * 24 * 3600
+
+
+def _newest_for_session(session_id: str, called_at: float) -> bool:
+    """Records this event's call time for the session; False when a later-called event was already handled."""
+    path = log_path().with_name("status-seq.json")
+    try:
+        seen = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(seen, dict):
+            seen = {}
+    except (OSError, ValueError):
+        seen = {}
+    last = seen.get(session_id)
+    if isinstance(last, (int, float)) and last > called_at:
+        return False
+    seen = {k: v for k, v in seen.items() if isinstance(v, (int, float)) and called_at - v < SEQ_KEEP_S}
+    seen[session_id] = called_at
+    try:
+        path.write_text(json.dumps(seen), encoding="utf-8")
+    except OSError:
+        pass
+    return True
 
 
 def _task_clock(session_id: str, state_name: str, now: int, transcript: str = "") -> tuple[int | None, str | None]:
@@ -479,7 +525,7 @@ def _resolve(marker, agent: str, config, link_factory, via: str = "fp") -> None:
         link_factory(config.key, config.server).send_resolved(fp, request_id)
         log("resolved-on-pc", agent=agent, fp=fp, id=request_id, via=via)
     except Exception as exc:
-        log("error", event="resolved", error=exc.__class__.__name__)
+        log("error", during="resolved", error=exc.__class__.__name__)
 
 
 def _resolve_session_markers(session_id: str | None, agent: str, config, link_factory) -> None:
@@ -524,4 +570,83 @@ def main_posttool(agent: str) -> int:
 
 
 def main_event(agent: str, state_name: str) -> int:
+    inbox = os.environ.get("HORNCALL_EVENT_INPUT")
+    if inbox:  # started in the background by the launcher: the hook's JSON waits in a file
+        path = Path(inbox)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        _drop(path)
+        _sweep_events(path.parent)
+        with _status_lock():
+            code = run_event(io.StringIO(text), agent, state_name)
+            try:
+                from . import install
+                if install.ensure_direct_hooks():
+                    log("direct-hooks-restored")
+            except Exception as exc:
+                log("error", during="direct-hooks", error=exc.__class__.__name__)
+            return code
     return run_event(open(sys.stdin.fileno(), encoding="utf-8", closefd=False), agent, state_name)
+
+
+def _sweep_events(folder: Path, older_than_s: int = 3600) -> None:
+    """Inputs left by a background process that died before reading its file."""
+    try:
+        for leftover in folder.glob("*.json"):
+            if time.time() - _mtime(leftover) > older_than_s:
+                _drop(leftover)
+    except OSError:
+        pass
+
+
+class _status_lock:
+    """One background status sender at a time, so sends go out in order and tasks.json / status-seq.json
+    are never written by two at once. Waits up to `wait_s`, then carries on without it (never hangs)."""
+
+    def __init__(self, wait_s: float = 30):
+        self.wait_s = wait_s
+        self.file = None
+
+    def __enter__(self):
+        try:
+            path = log_path().with_name("status.lock")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.file = open(path, "a+b")
+        except OSError:
+            return self
+        deadline = time.time() + self.wait_s
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    self.file.seek(0)
+                    msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except OSError:
+                if time.time() > deadline:
+                    log("status-lock-timeout")
+                    self.file.close()
+                    self.file = None
+                    return self
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        if self.file is None:
+            return False
+        try:
+            if os.name == "nt":
+                import msvcrt
+                self.file.seek(0)
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        self.file.close()
+        return False

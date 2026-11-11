@@ -217,9 +217,14 @@ def cmd_status(args) -> None:
     from . import compat
     for warning in compat.floor_warnings([a.split(" ")[0] for a in agents]):
         print(f"warning: {warning}")
-    if "plugin" in claude and not setup.git_bash_found():
-        print("warning: Claude Code runs the plugin's hooks with Git Bash, which is missing here — install Git for "
-              f"Windows (git-scm.com), or use hooks in settings.json instead: {command()} install claude")
+    if "plugin" in claude:
+        from . import update
+        direct = install.direct_hooks_python(update.INSTALL_ROOT / "plugin" / "hooks" / "hooks.json")
+        if direct is not None and not direct.is_file():
+            print(f"warning: Claude's hooks start {direct}, which is gone — run: {command()} setup")
+        elif direct is None and not setup.git_bash_found():  # direct hooks need no Git Bash
+            print("warning: Claude Code runs the plugin's hooks with Git Bash, which is missing here — install Git for "
+                  f"Windows (git-scm.com), or use hooks in settings.json instead: {command()} install claude")
     from . import autoupdate
     auto = autoupdate.describe()
     print(f"auto-update: {auto}" + (f"  (turn on: {command()} autoupdate on)" if auto == "off" else ""))

@@ -89,6 +89,14 @@ class Gemini(Agent):
         args = raw.get("tool_input") or {}
         if not isinstance(args, dict):
             args = {"input": args}
+        if tool == "ask_user":
+            # Gemini 0.28+ asks the user itself (also with --yolo) and waits: a card for the phone, the answer is
+            # given in Gemini. Claude's shape already: header, question, options [{label, description}], multiSelect.
+            questions = [{k: v for k, v in {"header": q.get("header"), "question": q.get("question"),
+                                             "options": q.get("options"), "multiSelect": q.get("multiSelect")}.items() if v}
+                         for q in args.get("questions") or [] if isinstance(q, dict)]
+            return HookInput("AskUserQuestion", {"questions": questions}, raw.get("cwd"), raw.get("session_id"),
+                             notify_only=True)
         if ours is None and tool.startswith("mcp_"):
             # With `gemini --yolo` nothing else stops them, so ask unless the name says read-only.
             words = protocol.tool_words(tool)
@@ -274,6 +282,13 @@ class Opencode(Agent):
         meta = args.get("metadata") or {}
         cwd, session = raw.get("cwd"), raw.get("session_id")
         first = resources[0] if resources else ""
+        if action == "question":
+            # opencode's own question to the user (its `question` tool, seen in session.tool.called, 2026-11-11):
+            # a card for the phone, the answer is given in opencode.
+            questions = [{k: v for k, v in {"header": q.get("header"), "question": q.get("question"),
+                                             "options": q.get("options"), "multiSelect": q.get("multiple")}.items() if v}
+                         for q in args.get("questions") or [] if isinstance(q, dict)]
+            return HookInput("AskUserQuestion", {"questions": questions}, cwd, session, notify_only=True)
         if action in ("shell", "bash"):
             command = {"command": "\n".join(resources)}
             if meta.get("description"):
