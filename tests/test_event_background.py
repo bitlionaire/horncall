@@ -55,7 +55,7 @@ def test_launcher_hands_the_event_to_a_detached_process_and_returns(approver_hom
     launcher = _load_launcher()
     spawned = []
     monkeypatch.setattr(launcher, "venv_python", lambda: tmp_path)  # "the venv exists"
-    monkeypatch.setattr(launcher, "run_in_venv", lambda args: (_ for _ in ()).throw(AssertionError("blocked")))
+    monkeypatch.setattr(launcher, "run_in_venv", lambda args, **kw: (_ for _ in ()).throw(AssertionError("blocked")))
     monkeypatch.setattr(launcher.subprocess, "Popen", lambda cmd, **kw: spawned.append((cmd, kw)))
     monkeypatch.setattr(launcher.sys, "stdin", _Stdin(b'{"session_id": "s1"}'))
     monkeypatch.setattr(launcher.sys, "argv", ["approver_launcher.py", "event", "claude", "working"])

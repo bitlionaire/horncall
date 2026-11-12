@@ -94,12 +94,35 @@ def setup() -> int:
                             "-r", str(REQUIREMENTS)], stdout=sys.stderr)
 
 
-def run_in_venv(args: list) -> int:
+CREATE_NO_WINDOW = 0x08000000
+
+
+def agent_call_options() -> dict:
+    """For a hook the agent runs (it waits on us): no console window on Windows. Agents start our launcher
+    without a console (Claude's exec-form hooks since 0.7.2), so the venv's python.exe got a new, visible, empty
+    window for as long as a permission question waited (2026-11-12). CREATE_NO_WINDOW hides it; the hook's own
+    stdin/stdout/stderr are passed explicitly, or the question and the answer would go to that hidden console."""
+    if os.name != "nt":
+        return {}
+    streams = {}
+    for name, stream in (("stdin", sys.stdin), ("stdout", sys.stdout), ("stderr", sys.stderr)):
+        try:
+            stream.fileno()
+            streams[name] = stream
+        except (AttributeError, OSError, ValueError):
+            streams[name] = subprocess.DEVNULL  # no such handle: nothing to pass on
+            if name != "stderr":  # the question can't come in or the answer can't go out: say so (review, 2026-11-12)
+                log_called("agent-stream-missing", [name])
+    return {"creationflags": CREATE_NO_WINDOW, **streams}
+
+
+def run_in_venv(args: list, agent_call: bool = False) -> int:
     # Run from the plugin folder, never the project: `python -m` puts the working directory first on
     # sys.path, so a json.py / hmac.py planted in the project would otherwise run inside the hook.
     # The caller's folder is passed on for `approver name`.
     env = dict(os.environ, PYTHONPATH=str(PLUGIN_ROOT), PYTHONIOENCODING="utf-8", HORNCALL_CWD=os.getcwd())
-    return subprocess.call([str(venv_python()), "-m", "approver", *args], env=env, cwd=str(PLUGIN_ROOT))
+    extra = agent_call_options() if agent_call else {}
+    return subprocess.call([str(venv_python()), "-m", "approver", *args], env=env, cwd=str(PLUGIN_ROOT), **extra)
 
 
 # No console for background work: DETACHED_PROCESS alone wasn't enough — the venv's python.exe only redirects to
@@ -188,7 +211,7 @@ def main() -> int:
         if not venv_python().exists() or not capturing and (
                 not is_on() or not pending.is_dir() or not any(pending.iterdir())):
             return 0
-        run_in_venv(args)
+        run_in_venv(args, agent_call=True)
         return 0
     if args[:1] in (["hook"], ["event"]):
         if args[:1] == ["hook"]:
@@ -203,7 +226,7 @@ def main() -> int:
             log_called("event-called", args)
             run_event_in_background(args)
             return 0
-        run_in_venv(args)
+        run_in_venv(args, agent_call=True)
         return 0  # never fail the hook
     if args[:1] == ["setup"]:
         target = install_copy()

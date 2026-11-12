@@ -237,7 +237,7 @@ def test_launcher_runs_the_hook_with_the_phone_off_only_when_capturing(capturing
     spec.loader.exec_module(launcher)  # HOME comes from HORNCALL_HOME: no state.json there = phone off
     ran = []
     monkeypatch.setattr(launcher, "venv_python", lambda: tmp_path)  # "the venv exists"
-    monkeypatch.setattr(launcher, "run_in_venv", lambda args: ran.append(args) or 0)
+    monkeypatch.setattr(launcher, "run_in_venv", lambda args, **kw: ran.append(args) or 0)
     if capturing:
         monkeypatch.setenv("HORNCALL_CAPTURE", "1")
     for args in (["hook", "gemini"], ["event", "gemini", "working"], ["posttool", "copilot"]):
