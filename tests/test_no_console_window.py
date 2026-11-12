@@ -70,13 +70,16 @@ def test_a_windowless_child_really_gets_the_question_and_returns_the_answer(tmp_
         "import importlib.util, subprocess, sys\n"
         f"spec = importlib.util.spec_from_file_location('l', r'{ROOT / 'plugin' / 'hooks' / 'approver_launcher.py'}')\n"
         "l = importlib.util.module_from_spec(spec); spec.loader.exec_module(l)\n"
-        "child = 'import sys, json; q = json.load(sys.stdin); print(json.dumps({\"decision\": q[\"want\"]}))'\n"
+        "child = 'import sys, json; q = json.loads(sys.stdin.buffer.read().decode(\"utf-8\")); "
+        "print(json.dumps({\"decision\": q[\"want\"], \"text\": q[\"text\"]}))'\n"
         "sys.exit(subprocess.call([sys.executable, '-c', child], **l.agent_call_options()))\n", encoding="utf-8")
-    out = subprocess.run([sys.executable, str(parent)], input='{"want": "allow", "text": "zażółć"}',
-                         capture_output=True, text=True, timeout=60, env=dict(os.environ, HORNCALL_HOME=str(tmp_path)),
+    # Bytes in and out: the machine's code page must not matter (GitHub's Windows runner is cp1252, where a text-mode
+    # pipe can't even encode Polish letters — the first version of this test failed there).
+    out = subprocess.run([sys.executable, str(parent)], input='{"want": "allow", "text": "zażółć"}'.encode("utf-8"),
+                         capture_output=True, timeout=60, env=dict(os.environ, HORNCALL_HOME=str(tmp_path)),
                          creationflags=0x08000000)
-    assert out.returncode == 0, out.stderr
-    assert json.loads(out.stdout) == {"decision": "allow"}
+    assert out.returncode == 0, out.stderr.decode("utf-8", "replace")
+    assert json.loads(out.stdout.decode("ascii")) == {"decision": "allow", "text": "zażółć"}
 
 
 def test_a_missing_stream_is_logged_not_lost_silently(launcher, approver_home, monkeypatch):
