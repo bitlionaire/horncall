@@ -97,7 +97,7 @@ def setup() -> int:
 CREATE_NO_WINDOW = 0x08000000
 
 
-def agent_call_options() -> dict:
+def agent_call_options(args: list | None = None) -> dict:
     """For a hook the agent runs (it waits on us): no console window on Windows. Agents start our launcher
     without a console (Claude's exec-form hooks since 0.7.2), so the venv's python.exe got a new, visible, empty
     window for as long as a permission question waited (2026-11-12). CREATE_NO_WINDOW hides it; the hook's own
@@ -112,7 +112,7 @@ def agent_call_options() -> dict:
         except (AttributeError, OSError, ValueError):
             streams[name] = subprocess.DEVNULL  # no such handle: nothing to pass on
             if name != "stderr":  # the question can't come in or the answer can't go out: say so (review, 2026-11-12)
-                log_called("agent-stream-missing", [name])
+                log_called("agent-stream-missing", args or [], stream=name)
     return {"creationflags": CREATE_NO_WINDOW, **streams}
 
 
@@ -121,7 +121,7 @@ def run_in_venv(args: list, agent_call: bool = False) -> int:
     # sys.path, so a json.py / hmac.py planted in the project would otherwise run inside the hook.
     # The caller's folder is passed on for `approver name`.
     env = dict(os.environ, PYTHONPATH=str(PLUGIN_ROOT), PYTHONIOENCODING="utf-8", HORNCALL_CWD=os.getcwd())
-    extra = agent_call_options() if agent_call else {}
+    extra = agent_call_options(args) if agent_call else {}
     return subprocess.call([str(venv_python()), "-m", "approver", *args], env=env, cwd=str(PLUGIN_ROOT), **extra)
 
 
@@ -186,12 +186,13 @@ def maybe_auto_update() -> None:
         pass
 
 
-def log_called(event: str, args: list) -> None:
+def log_called(event: str, args: list, **extra) -> None:
     """One line before anything else runs: the agent did call us (agent name, and the state for events)."""
     fields = {"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event,
               "agent": args[1] if len(args) > 1 else "claude", "pid": os.getpid()}
     if args[:1] == ["event"] and len(args) > 2:
         fields["state"] = args[2]
+    fields.update(extra)
     try:
         with open(HOME / "hook.log", "a", encoding="utf-8") as f:
             f.write(json.dumps(fields) + "\n")
@@ -244,4 +245,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:
+        # Called by an agent: an unexpected error must not break it (exit 0, empty stdout = no opinion).
+        if sys.argv[1:2] in (["hook"], ["event"], ["posttool"], ["statusline"]):
+            sys.exit(0)
+        raise

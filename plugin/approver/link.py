@@ -28,6 +28,10 @@ class Link:
         message = protocol.make_resolved(fp, request_id)
         self.transport.publish(self.topic_req, crypto.seal(self.key, self.topic_req, message), priority=3)
 
+    def send_pc_state(self, device: str, paused_until: int) -> None:
+        message = protocol.make_pc_state(device, paused_until)
+        self.transport.publish(self.topic_req, crypto.seal(self.key, self.topic_req, message), priority=3)
+
     def send_cancel(self, request_id: str, reason: str) -> None:
         self.transport.publish(self.topic_req, crypto.seal(
             self.key, self.topic_req, protocol.make_cancel(request_id, reason)))

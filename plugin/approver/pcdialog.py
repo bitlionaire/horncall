@@ -19,15 +19,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-ANSWERS = ("allow", "deny", "offduty", "off")  # offduty: this PC off duty 2 h; off: no PC windows (phone still waits)
+ANSWERS = ("allow", "deny", "offduty", "off")  # offduty: this PC sends nothing for 2 h; off: no PC windows (phone still waits)
 
 TEXTS = {
-    "en": {"allow": "Allow", "deny": "Deny", "danger": "DANGEROUS", "title": "Horncall: {agent} asks",
+    "en": {"allow": "Approve", "deny": "Deny", "danger": "DANGEROUS", "title": "Horncall: {agent} asks",
            "hint": "{agent} is waiting for a decision. You can answer here or on your phone.",
-           "offduty": "Off duty for 2 h (the AI asks here, the phone rests)", "off": "Turn PC windows off"},
-    "pl": {"allow": "Zezwól", "deny": "Odmów", "danger": "GROŹNE", "title": "Horncall: {agent} pyta",
+           "offduty": "Don't send from this PC for 2 h (the AI asks here)", "off": "Turn PC windows off"},
+    "pl": {"allow": "Zatwierdź", "deny": "Odrzuć", "danger": "GROŹNE", "title": "Horncall: {agent} pyta",
            "hint": "{agent} czeka na decyzję. Możesz odpowiedzieć tutaj albo na telefonie.",
-           "offduty": "Zejdź ze służby na 2 h (AI pyta tutaj, telefon odpoczywa)", "off": "Wyłącz okienka na komputerze"},
+           "offduty": "Nie wysyłaj z tego komputera przez 2 h (AI pyta tutaj)", "off": "Wyłącz okienka na komputerze"},
 }
 
 

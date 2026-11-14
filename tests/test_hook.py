@@ -410,3 +410,21 @@ def test_cli_name_sets_label(tmp_path, capsys):
     assert Config.load().labels[protocol.path_key(str(tmp_path))] == "Backend ORLEN"
     cli.main(["name", "--path", str(tmp_path), "--clear"])
     assert Config.load().labels == {}
+
+
+def test_other_phones_drop_the_card_once_one_answered():
+    """Owner 2026-11-13: with two trusted phones (or two apps) the one that did not answer kept the card for 30 min."""
+    first, second = device_key(), device_key()
+    setup(phones=[{"pub": first[0], "added": 1}, {"pub": second[0], "added": 1}])
+    for decision in ("allow", "deny", "pass"):
+        transport = phone_answering(decision, signer=first)
+        run_hook(transport)
+        assert sent_types(transport) == ["request", "resolved"], decision
+
+
+def test_one_phone_gets_no_extra_message():
+    phone = device_key()
+    setup(phones=[{"pub": phone[0], "added": 1}])
+    transport = phone_answering("allow", signer=phone)
+    assert run_hook(transport) is not None
+    assert sent_types(transport) == ["request"]  # nothing to tell, the answer is not delayed

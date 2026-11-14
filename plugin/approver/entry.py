@@ -23,6 +23,14 @@ def _is_on() -> bool:
     return state.get("mode") == "on" and (until is None or time.time() < until)
 
 
+def background_flags() -> list[str]:
+    """Interpreter flags for the background sender. Not -I: it also drops the user site-packages and PYTHONPATH,
+    so `pip install --user horncall` couldn't import itself and every task report died silently (review of 0.7.3).
+    The process runs in ~/.horncall, never in the project, so a json.py planted in a project is out of reach;
+    -P (3.11+) also keeps that folder off sys.path."""
+    return ["-P"] if sys.version_info >= (3, 11) else []
+
+
 def _event_in_background(args: list[str]) -> None:
     """`event …` only tells the phone: imports and the network send run in a detached process and the hook
     returns at once (same as hooks/approver_launcher.py run_event_in_background, which explains why)."""
@@ -42,8 +50,7 @@ def _event_in_background(args: list[str]) -> None:
         python = Path(sys.executable)
         if os.name == "nt" and python.with_name("pythonw.exe").exists():
             python = python.with_name("pythonw.exe")
-        # -I: the project's folder never lands on sys.path (a planted json.py would run inside the hook).
-        subprocess.Popen([str(python), "-I", "-m", "approver", *args], env=env, cwd=str(home_dir()),
+        subprocess.Popen([str(python), *background_flags(), "-m", "approver", *args], env=env, cwd=str(home_dir()),
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **detached)
     except (OSError, ValueError):
         pass

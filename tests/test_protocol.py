@@ -112,7 +112,7 @@ def test_ordinary_tools_do_not_need_the_pc():
 def test_fit_to_budget_shrinks_large_preview():
     key = crypto.new_key()
     req = protocol.build_request({"tool_name": "Write", "tool_input": {
-        "file_path": "/r/big.txt", "content": "ż" * 10000}, "cwd": "/r"}, "PC", 60, 100000)
+        "file_path": "/r/big.txt", "content": "\u017c" * 10000}, "cwd": "/r"}, "PC", 60, 100000)
     body = protocol.fit_to_budget(req, lambda m: crypto.seal(key, "ca-x", m))
     assert len(body.encode()) <= protocol.BODY_BUDGET
     opened = crypto.open_envelope(key, "ca-x", body)
@@ -184,3 +184,21 @@ def test_newer_version_comparison():
     assert _newer("0.10.0", "0.9.9")
     assert not _newer("0.2.0", "0.2.0")
     assert not _newer("", "0.2.0")
+
+
+@pytest.mark.parametrize("command, title", [
+    ("@'\nimport sys\nprint(sys.version)\n'@ | python -", "python -"),
+    ("$body = @\"\n{\"a\": 1}\n\"@\nInvoke-RestMethod -Body $body http://x", "Invoke-RestMethod -Body $body http://x"),
+    ("# list files\n\ngit status", "git status"),
+    ("python - <<'EOF'\nprint(1)\nEOF", "python - <<'EOF'"),
+    ("@'\nonly data, never closed", "@'"),
+    ("ls", "ls"),
+])
+def test_shell_title_is_the_first_meaningful_line(command, title):
+    assert protocol.command_title(command) == title
+    assert protocol.describe("PowerShell", {"command": command}, 500)[0] == f"PowerShell: {title}"
+
+def test_test_request_shows_its_message_not_json():
+    # `approver test`: the card showed the raw tool_input JSON (owner 2026-11-13).
+    title, preview = protocol.describe("Test", {"description": "Test from approver CLI", "message": "Ready for requests?"}, 400)
+    assert (title, preview) == ("Test", "Ready for requests?")

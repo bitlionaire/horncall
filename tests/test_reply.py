@@ -5,7 +5,7 @@ from approver import reply, vitals
 from test_vitals import write_jsonl
 
 CLAUDE = {"type": "assistant", "message": {"role": "assistant", "content": [
-    {"type": "text", "text": "**Gotowe.** Dodałem testy:\n\n```python\nassert x\n```\n- `reply.py` czyta odpowiedź"}]}}
+    {"type": "text", "text": "**Done.** I added tests:\n\n```python\nassert x\n```\n- `reply.py` reads the answer"}]}}
 CLAUDE_TOOL = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {}}]}}
 CODEX = {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer",
                                               "content": [{"type": "output_text", "text": "Plik utworzony."}]}}
@@ -17,7 +17,7 @@ COPILOT = {"type": "assistant.message", "data": {"content": "Done.", "toolReques
 
 def test_each_ai_gives_its_last_answer(tmp_path, monkeypatch):
     path = write_jsonl(tmp_path / "c.jsonl", CLAUDE, CLAUDE_TOOL, {"type": "cost-state"})
-    assert reply.read("claude", {"transcript_path": path}) == "Gotowe. Dodałem testy: reply.py czyta odpowiedź"
+    assert reply.read("claude", {"transcript_path": path}) == "Done. I added tests: reply.py reads the answer"
     path = write_jsonl(tmp_path / "x.jsonl", CODEX, {"type": "event_msg", "payload": {"type": "token_count"}})
     assert reply.read("codex", {"transcript_path": path}) == "Plik utworzony."
     path = write_jsonl(tmp_path / "x2.jsonl", CODEX_DONE)
@@ -35,10 +35,10 @@ def test_each_ai_gives_its_last_answer(tmp_path, monkeypatch):
 
 
 def test_long_answers_are_cut_on_a_word():
-    text = reply.plain("słowo " * 100)
-    assert len(text) <= reply.MAX_CHARS + 1 and text.endswith("słowo…")
+    text = reply.plain("word " * 100)
+    assert len(text) <= reply.MAX_CHARS + 1 and text.endswith("word\u2026")
     assert reply.plain("```\nonly code\n```") is None
-    assert reply.plain("# Nagłówek\n> cytat\n1. [link](http://x) i ~~skreślone~~") == "Nagłówek cytat link i skreślone"
+    assert reply.plain("# Heading\n> quote\n1. [link](http://x) and ~~struck~~") == "Heading quote link and struck"
 
 
 def test_broken_or_missing_files_mean_no_preview(tmp_path):

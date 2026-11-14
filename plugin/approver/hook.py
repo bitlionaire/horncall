@@ -29,6 +29,44 @@ def decision_output(behavior: str, message: str | None = None) -> dict:
 LOG_MAX_BYTES = 1_000_000  # then hook.log becomes hook.log.1 (the previous .1 goes): at most ~2 MB on disk
 
 
+CODEX_TAIL_BYTES = 2_000_000
+
+
+def codex_reviewer(raw: dict, retry_s: float = 0.3) -> str | None:
+    """Who approves this Codex turn: "auto_review" (the "Approve for me" mode), "user", or None when unknown.
+
+    The hook input is the same in both modes (permission_mode "default", captured with Codex 0.167); the mode is
+    only in the session file: one {"type":"turn_context","payload":{"turn_id":…,"approvals_reviewer":…}} line per
+    turn. Undocumented, so best effort: only the line of THIS turn counts, never an older turn's, and anything
+    unexpected means None (the phone is asked as before). One short retry in case the line isn't written yet."""
+    turn_id = raw.get("turn_id")
+    path = raw.get("transcript_path")
+    if not turn_id or not path:
+        return None
+    for attempt in range(2):
+        # 2 MB, not the usual 256 KB: a long turn writes a lot after its turn_context line (review of 0.8.0).
+        for line in reversed(vitals.tail_lines(path, CODEX_TAIL_BYTES)):
+            if '"turn_context"' not in line or turn_id not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            payload = entry.get("payload") if isinstance(entry, dict) else None
+            if entry.get("type") == "turn_context" and isinstance(payload, dict) and payload.get("turn_id") == turn_id:
+                reviewer = payload.get("approvals_reviewer")
+                return reviewer if isinstance(reviewer, str) else None
+        if attempt == 0 and retry_s:
+            time.sleep(retry_s)
+    return None
+
+
+def _read_input(stdin: TextIO) -> str:
+    """The hook's JSON. A leading byte-order mark (some shells add one when piping) used to make it unreadable,
+    and the hook then did nothing, silently."""
+    return (stdin.read() or "{}").lstrip("﻿") or "{}"
+
+
 def log(event: str, **fields) -> None:
     """Metadata-only log (no commands or file contents) — useful to verify the hook fires."""
     try:
@@ -90,7 +128,7 @@ def capture(agent: str, kind: str, raw: dict) -> None:
 def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude") -> int:
     adapter = agents.get(agent)
     try:
-        raw = json.loads(stdin.read() or "{}")
+        raw = json.loads(_read_input(stdin))
     except ValueError:
         log("bad-input", agent=adapter.name)
         return 0
@@ -133,6 +171,12 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
     if hook_input.notify_only:
         request["expires_at"] = request["ts"] + config.timeout_s  # nothing waits on it: the agent's hook limit doesn't apply
         return _notify_question(link, request, hook_input, adapter.name)
+    if adapter.name == "codex" and config.codex_auto_review == "follow" and request["risk"] != "danger" \
+            and codex_reviewer(raw) == "auto_review":
+        # "Approve for me": Codex's own reviewer decides. No card, no PC window, no opinion; risky commands still
+        # come to the phone (the owner's choice, 2026-11-12). Switch: `approver codex-review always-ask`.
+        log("codex-auto-review", id=request["id"], tool=hook_input.tool, session=request.get("session"))
+        return 0
     deadline = time.time() + wait_s
     log("request", id=request["id"], agent=adapter.name, tool=hook_input.tool, risk=request["risk"],
         session=request.get("session"), fp=request["fp"])
@@ -192,6 +236,8 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
         log("off-duty", id=request["id"], hours=OFF_DUTY_S // 3600)
         try:
             link.send_cancel(request["id"], "off-duty")
+            # The phone shows this PC as paused (apps 0.8.0+); it never knew before and kept saying "on duty".
+            link.send_pc_state(config.device_name, int(state.paused_until))
         except Exception:
             pass
         return 0
@@ -206,7 +252,7 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
         if on_pc == "allow":
             _emit(stdout, adapter.allow())
         elif on_pc == "deny":
-            _emit(stdout, adapter.deny("The user denied this on the PC (Horncall window)."))
+            _emit(stdout, _deny_and_stop(adapter, "The user denied this on the PC (Horncall window).", config.deny_stops))
         return 0
 
     if answered_on_pc:
@@ -227,6 +273,14 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
     log("response", id=request["id"], decision=response["decision"], via=response.get("via"))
     if isinstance(response.get("pc_window"), bool) and response["pc_window"] != config.pc_dialog:
         _set_pc_windows(response["pc_window"])  # the app's "windows on the PC" switch (app 0.7.0+)
+    # Several trusted phones (or a second app): the ones that did not answer kept the card until it expired
+    # (owner 2026-11-13). Tell them it is answered. One phone only: nothing to send, the answer is not delayed.
+    told_others = len(config.phones) > 1
+    if told_others:
+        try:
+            link.send_resolved(request["fp"], request["id"])
+        except Exception:
+            told_others = False
     if response["decision"] == "pass":
         # The phone is muted ("ask me at the PC"): no opinion, the agent's own dialog decides. The phone
         # showed no card, so there is nothing to cancel.
@@ -236,16 +290,17 @@ def run(stdin: TextIO, stdout: TextIO, link_factory=Link, agent: str = "claude")
         # A choice or a plan decision: Claude Code needs the answer itself, a bare allow answers nothing.
         # Say nothing (the question stays on the PC) and take the card off the phone quietly.
         log("needs-pc", id=request["id"], tool=hook_input.tool)
-        try:
-            link.send_resolved(request["fp"], request["id"])
-        except Exception:
-            pass
+        if not told_others:
+            try:
+                link.send_resolved(request["fp"], request["id"])
+            except Exception:
+                pass
         return 0
     if response["decision"] == "allow":
         _emit(stdout, adapter.allow())
     else:
         via = response.get("via", "phone")
-        _emit(stdout, adapter.deny(f"The user denied this from their phone ({via})."))
+        _emit(stdout, _deny_and_stop(adapter, f"The user denied this from their phone ({via}).", config.deny_stops))
     return 0
 
 
@@ -299,7 +354,7 @@ def run_event(stdin: TextIO, agent: str, state_name: str, link_factory=Link) -> 
     """
     adapter = agents.get(agent)
     try:
-        raw = json.loads(stdin.read() or "{}")
+        raw = json.loads(_read_input(stdin))
     except ValueError:
         return 0
     if isinstance(raw, dict):
@@ -314,29 +369,43 @@ def run_event(stdin: TextIO, agent: str, state_name: str, link_factory=Link) -> 
         log("event-shape", agent=adapter.name, state=state_name, keys=sorted(raw)[:30],
             session=str(session_id or "")[:8], transcript=Path(str(raw.get("transcript_path") or "")).name[:60])
     called_at = _called_at()
-    if not _newest_for_session(str(session_id or "?"), called_at):
-        # A background sender that started late: the session already reported a newer start/end.
-        log("status-stale", agent=adapter.name, state=state_name)
-        return 0
+    newest, newer_start = _event_order(str(session_id or "?"), called_at, state_name)
+    late_idle = False
+    if not newest:
+        if state_name == "working" or newer_start is None:
+            # A background sender that started late: the session already reported a newer start/end.
+            log("status-stale", agent=adapter.name, state=state_name)
+            return 0
+        # The end of the previous turn, overtaken by the next turn's start (two events milliseconds apart, the
+        # background senders raced): still close that task and send its report; the phone orders them by seq.
+        late_idle = True
+        log("status-late-idle", agent=adapter.name)
     if state_name == "working":
-        _resolve_session_markers(str(session_id) if session_id else None, adapter.name, config, link_factory)
+        _resolve_session_markers(str(session_id) if session_id else None, adapter.name, config, link_factory,
+                                 before=called_at)
     now = int(called_at)
     transcript = str(raw.get("transcript_path") or "")
     started, task_session = _task_clock(str(session_id or "?"), state_name, now, transcript)
+    if late_idle:
+        if started is not None and started > now:
+            started = None  # that was the next turn's own start (no start of the old turn was known)
+        # The next turn's start kept the old start time (it was still there): give it its own.
+        _task_clock(str(task_session or session_id or "?"), "working", int(newer_start), transcript)
     if task_session and task_session != str(session_id):
         # The end came with another session id than the start (seen with Gemini CLI) but from the same
         # chat file: report it for the unit that started, so its timer stops on the phone.
         log("session-matched-by-transcript", agent=adapter.name)
         session_id = task_session
     if state_name == "idle":
-        _clear_session_markers(session_id)
+        _clear_session_markers(session_id, before=called_at)
     hook_input = {"session_id": session_id, "cwd": raw.get("cwd")}
     worked = now - started if state_name == "idle" and started else None
     if worked is not None and worked > MAX_TASK_S:
         # A session killed mid-task never says idle; a late idle would count the whole gap as work.
         log("worked-capped", agent=adapter.name, worked_s=worked)
         worked = None
-    status = protocol.make_status(hook_input, config.device_name, adapter.name, state_name, now, worked, config.labels)
+    status = protocol.make_status(hook_input, config.device_name, adapter.name, state_name, now, worked, config.labels,
+                                  seq=int(called_at * 1000) * 2 + (1 if state_name == "working" else 0))
     unit_vitals = vitals.read(adapter.name, raw)
     if unit_vitals:
         status["vitals"] = unit_vitals
@@ -364,8 +433,19 @@ def _called_at() -> float:
 SEQ_KEEP_S = 7 * 24 * 3600
 
 
-def _newest_for_session(session_id: str, called_at: float) -> bool:
-    """Records this event's call time for the session; False when a later-called event was already handled."""
+def _event_key(value) -> tuple[float, int]:
+    """(call time, rank) of a stored event: in the same instant a start (1) is newer than an end (0) — the end of
+    one turn and the start of the next. Before 0.8.0 only the time was stored."""
+    if isinstance(value, (int, float)):
+        return float(value), 0
+    if isinstance(value, list) and len(value) == 2 and all(isinstance(x, (int, float)) for x in value):
+        return float(value[0]), int(value[1])
+    return 0.0, 0
+
+
+def _event_order(session_id: str, called_at: float, state_name: str) -> tuple[bool, float | None]:
+    """Records this event for the session. Returns (newest, newer_start): newest is False when an event called
+    later was already handled; newer_start is that event's call time when it was a task start."""
     path = log_path().with_name("status-seq.json")
     try:
         seen = json.loads(path.read_text(encoding="utf-8"))
@@ -373,16 +453,18 @@ def _newest_for_session(session_id: str, called_at: float) -> bool:
             seen = {}
     except (OSError, ValueError):
         seen = {}
+    rank = 1 if state_name == "working" else 0
     last = seen.get(session_id)
-    if isinstance(last, (int, float)) and last > called_at:
-        return False
-    seen = {k: v for k, v in seen.items() if isinstance(v, (int, float)) and called_at - v < SEQ_KEEP_S}
-    seen[session_id] = called_at
+    if last is not None and _event_key(last) > (called_at, rank):
+        last_t, last_rank = _event_key(last)
+        return False, (last_t if last_rank == 1 else None)
+    seen = {k: v for k, v in seen.items() if called_at - _event_key(v)[0] < SEQ_KEEP_S}
+    seen[session_id] = [called_at, rank]
     try:
         path.write_text(json.dumps(seen), encoding="utf-8")
     except OSError:
         pass
-    return True
+    return True, None
 
 
 def _task_clock(session_id: str, state_name: str, now: int, transcript: str = "") -> tuple[int | None, str | None]:
@@ -427,7 +509,8 @@ def _pending_marker(fp: str, session_id: str | None, request_id: str, tool: str 
     path = pending_dir() / f"{fp}.{request_id}"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"session": session_id, "id": request_id, "t": int(time.time()), "tool": tool, "fp": fp}),
+        # t with milliseconds: a late task report compares it with the moment it was called (_asked_before).
+        path.write_text(json.dumps({"session": session_id, "id": request_id, "t": round(time.time(), 3), "tool": tool, "fp": fp}),
                         encoding="utf-8")
     except OSError:
         return None
@@ -447,7 +530,7 @@ def run_posttool(stdin: TextIO, agent: str, link_factory=Link) -> int:
     tell the phone to drop the card. Silent, always exits 0."""
     adapter = agents.get(agent)
     try:
-        raw = json.loads(stdin.read() or "{}")
+        raw = json.loads(_read_input(stdin))
     except ValueError:
         return 0
     if not isinstance(raw, dict):
@@ -528,18 +611,26 @@ def _resolve(marker, agent: str, config, link_factory, via: str = "fp") -> None:
         log("error", during="resolved", error=exc.__class__.__name__)
 
 
-def _resolve_session_markers(session_id: str | None, agent: str, config, link_factory) -> None:
+def _asked_before(data: dict, before: float | None) -> bool:
+    """The marker's question was asked before the event was called. Task reports go out in the background and can
+    be late: a question asked after the agent called the event belongs to the new turn and must stay."""
+    return before is None or data.get("t", 0) <= before
+
+
+def _resolve_session_markers(session_id: str | None, agent: str, config, link_factory,
+                             before: float | None = None) -> None:
     """A new task started in this chat: whatever it still "asked" was answered on the PC (or refused there,
     which no hook reports). The phone drops those cards."""
     folder = pending_dir()
     if not folder.exists() or not session_id:
         return
     for marker in sorted(folder.iterdir(), key=_mtime):
-        if _marker_data(marker).get("session") == session_id:
+        data = _marker_data(marker)
+        if data.get("session") == session_id and _asked_before(data, before):
             _resolve(marker, agent, config, link_factory, via="new-task")
 
 
-def _clear_session_markers(session_id: str | None) -> None:
+def _clear_session_markers(session_id: str | None, before: float | None = None) -> None:
     """The chat finished its turn: nothing of it is waiting any more (the phone clears its cards itself)."""
     folder = pending_dir()
     if not folder.exists():
@@ -548,10 +639,27 @@ def _clear_session_markers(session_id: str | None) -> None:
     for path in folder.iterdir():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("session") == session_id or now - data.get("t", 0) > 2 * 3600:
+            if (data.get("session") == session_id and _asked_before(data, before)) or now - data.get("t", 0) > 2 * 3600:
                 path.unlink(missing_ok=True)
         except (OSError, ValueError):
             pass
+
+
+# After a deny the model often tried another way to do the same thing: the costly, risky part (2026-11-13).
+STOP_AFTER_DENY = ("Do not retry it or work around it in another way: stop what you are doing and wait for the "
+                   "user to tell you how to proceed.")
+GO_ON_AFTER_DENY = ("Do not retry it or work around it in another way. Go on with the rest of the task if you can "
+                    "without it; otherwise stop and wait for the user's instructions.")
+
+
+def _deny_and_stop(adapter, reason: str, stop: bool = True) -> dict:
+    """A deny the user gave (phone or PC window): no workarounds; by default (`deny-stops on`) stop and wait, and
+    Claude Code also ends the turn (`interrupt`, documented for PermissionRequest), like "No" in its own dialog.
+    Not for timeouts: nobody said no there."""
+    out = adapter.deny(f"{reason} {STOP_AFTER_DENY if stop else GO_ON_AFTER_DENY}")
+    if stop and adapter.name == "claude":  # CodeBuddy (its fork) may not know the field: left as it was
+        out["hookSpecificOutput"]["decision"]["interrupt"] = True
+    return out
 
 
 def _emit(stdout: TextIO, payload: dict) -> None:

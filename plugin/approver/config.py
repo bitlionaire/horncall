@@ -88,6 +88,13 @@ class Config:
     noscreen_wait_s: int = 120
     # Unpacked-ZIP installs: once a day a task end installs a new signed release (autoupdate.py). Opt-in.
     auto_update: bool = False
+    # Codex "Approve for me" (its own reviewer decides): "follow" sends no card for it (risky commands still go to
+    # the phone), "always-ask" sends every permission question to the phone as before.
+    codex_auto_review: str = "follow"
+    # A deny from the phone / PC window ends Claude Code's turn, like "No" in its own dialog (owner 2026-11-13: a
+    # "no" usually means the whole thing goes the wrong way). `deny-stops off`: the AI is told not to retry or work
+    # around it, and goes on with the rest of the task if it can.
+    deny_stops: bool = True
 
     @classmethod
     def load(cls) -> "Config | None":
@@ -113,7 +120,7 @@ class State:
     mode: str = "off"  # "on" = forward requests to the phone
     on_until: float | None = None  # unix time after which mode falls back to "off"
     on_since: float | None = None  # when the mode was switched on
-    # "Off duty for 2 h" from the PC window: this PC sends nothing to the phone until then, then duty resumes by itself.
+    # `off --hours N` (or the PC window's 2 h button): this PC sends nothing to the phone until then, then sends again.
     paused_until: float | None = None
 
     @classmethod
@@ -146,6 +153,12 @@ def _write_private(path: Path, text: str) -> None:
     except OSError:
         pass
     os.replace(tmp, path)
+
+
+def write_secret(path: Path, text: str) -> None:
+    """A file that holds the pairing key (the QR pages): readable by this user only, like config.json."""
+    _write_private(path, text)
+    _restrict_acl(path)
 
 
 def _restrict_acl(path: Path) -> None:

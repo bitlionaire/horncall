@@ -86,7 +86,8 @@ def test_pip_entry_hands_the_event_to_a_detached_process(approver_home, monkeypa
     monkeypatch.setattr(entry.sys, "argv", ["horncall", "event", "codex", "idle"])
     assert entry.main() == 0
     [(cmd, kw)] = spawned
-    assert cmd[1:] == ["-I", "-m", "approver", "event", "codex", "idle"]
+    # Not -I: it hid a `pip install --user` from itself (review of 0.7.3); -P on 3.11+ keeps the folder off sys.path.
+    assert cmd[1:] == [*entry.background_flags(), "-m", "approver", "event", "codex", "idle"]
     assert Path(kw["env"]["HORNCALL_EVENT_INPUT"]).read_bytes() == b"{}"
 
 

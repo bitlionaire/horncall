@@ -74,21 +74,22 @@ def test_a_windowless_child_really_gets_the_question_and_returns_the_answer(tmp_
         "print(json.dumps({\"decision\": q[\"want\"], \"text\": q[\"text\"]}))'\n"
         "sys.exit(subprocess.call([sys.executable, '-c', child], **l.agent_call_options()))\n", encoding="utf-8")
     # Bytes in and out: the machine's code page must not matter (GitHub's Windows runner is cp1252, where a text-mode
-    # pipe can't even encode Polish letters — the first version of this test failed there).
-    out = subprocess.run([sys.executable, str(parent)], input='{"want": "allow", "text": "zażółć"}'.encode("utf-8"),
+    # pipe can't even encode some non-ASCII letters — the first version of this test failed there).
+    out = subprocess.run([sys.executable, str(parent)], input='{"want": "allow", "text": "caf\u00e9 \u017c"}'.encode("utf-8"),
                          capture_output=True, timeout=60, env=dict(os.environ, HORNCALL_HOME=str(tmp_path)),
                          creationflags=0x08000000)
     assert out.returncode == 0, out.stderr.decode("utf-8", "replace")
-    assert json.loads(out.stdout.decode("ascii")) == {"decision": "allow", "text": "zażółć"}
+    assert json.loads(out.stdout.decode("ascii")) == {"decision": "allow", "text": "caf\u00e9 \u017c"}
 
 
 def test_a_missing_stream_is_logged_not_lost_silently(launcher, approver_home, monkeypatch):
     if os.name != "nt":
         pytest.skip("Windows-only path")
     monkeypatch.setattr(sys, "stdout", None)
-    options = launcher.agent_call_options()
+    options = launcher.agent_call_options(["hook", "gemini"])
     assert options["stdout"] is launcher.subprocess.DEVNULL
-    assert "agent-stream-missing" in (approver_home / "hook.log").read_text(encoding="utf-8")
+    entry = json.loads((approver_home / "hook.log").read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["event"] == "agent-stream-missing" and entry["stream"] == "stdout" and entry["agent"] == "gemini"
 
 
 def test_commands_typed_in_a_terminal_keep_their_console(launcher, monkeypatch):

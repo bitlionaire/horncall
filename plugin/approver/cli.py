@@ -9,7 +9,7 @@ import time
 import urllib.parse
 
 from . import __version__, agents as agent_registry, crypto, phones, protocol
-from .config import Config, State, config_path, home_dir
+from .config import Config, State, config_path, home_dir, write_secret
 from .link import Link
 from .transport import Ntfy
 
@@ -38,6 +38,38 @@ def print_qr(uri: str, say=print) -> bool:
     return True
 
 
+def open_qr_page(uri: str, device: str) -> str | None:
+    """Writes ~/.horncall/pair-qr.html (the QR, the link, a warning) and opens it in the browser.
+    The path, or None when there is no screen (SSH, a Linux box without a desktop) or qrcode is missing."""
+    import html
+    import os
+    import webbrowser
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return None  # a remote machine: the page would open on a screen nobody looks at
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return None  # webbrowser would pick a text browser here and hang the AI's tool call
+    try:
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
+        svg = qrcode.make(uri, image_factory=SvgPathImage, box_size=14).to_string(encoding="unicode")
+    except ImportError:
+        return None
+    page = home_dir() / "pair-qr.html"
+    write_secret(page,
+        "<!doctype html><meta charset='utf-8'><title>Horncall pairing</title>"
+        "<body style='font-family:sans-serif;background:#101214;color:#F1F3F5;text-align:center;padding:24px'>"
+        f"<h2>Pair {html.escape(device)} with your phone</h2>"
+        "<p>In the Horncall app: <b>Add computer</b> &rsaquo; <b>Scan QR</b></p>"
+        f"<div style='background:#fff;display:inline-block;padding:16px;border-radius:12px'>{svg}</div>"
+        f"<p style='word-break:break-all;color:#A7AFBA;font-size:13px'>{html.escape(uri)}</p>"
+        "<p style='color:#E8BD62'>Keep it to yourself: it holds this computer's key. Close this page when done.</p>")
+    try:
+        opened = webbrowser.open(page.as_uri())
+    except Exception:
+        opened = False
+    return str(page) if opened else None
+
+
 def command() -> str:
     """How the user runs us: `horncall` (pip/pipx) or `approver` (plugin folder, also /horncall:approver)."""
     from . import install
@@ -55,7 +87,8 @@ def cmd_pair(args) -> None:
     existing = Config.load()
     if existing and not args.new:
         config = existing
-        print("Already paired — showing the existing code (use --new for a fresh key).")
+        if not getattr(args, "open", False):
+            print("Already paired — showing the existing code (use --new for a fresh key).")
     else:
         config = Config(key=crypto.new_key())
     if args.server:
@@ -66,21 +99,31 @@ def cmd_pair(args) -> None:
     config.save()
 
     uri = pairing_uri(config)
+    if getattr(args, "open", False):
+        # Run by the AI (/horncall:approver pair): the QR opens on the screen and the model gets one line, never the
+        # key (it would be sent to the AI's servers) nor the QR (thousands of tokens) - owner 2026-11-13.
+        page = open_qr_page(uri, config.device_name)
+        if page:
+            print(f"The pairing QR is open in your browser ({page}). Scan it in the Horncall app: Add computer. "
+                  f"A new phone can join for the next {phones.PAIRING_WINDOW_S // 60} min.")
+        else:
+            print(f"Could not show the QR on this screen. Run `{command()} pair` in a terminal to see it.")
+        return
     if print_qr(uri):
         try:
             import qrcode
             from qrcode.image.svg import SvgPathImage
             svg = home_dir() / "pair-qr.svg"
-            qrcode.make(uri, image_factory=SvgPathImage).save(str(svg))
+            write_secret(svg, qrcode.make(uri, image_factory=SvgPathImage).to_string(encoding="unicode"))
             print(f"QR also saved to: {svg}")
         except (ImportError, OSError):
             pass
     print("\nScan it in the Horncall app, or paste this code:\n")
     print(uri)
-    print("\nKeep it to yourself: it holds this PC's key (whoever has it can read your orders). Don't share screenshots of it.")
+    print("\nKeep it to yourself: it holds this PC's key (whoever has it can read your requests). Don't share screenshots of it.")
     print(f"\nDevice: {config.device_name}   Server: {config.server}")
     print(f"For the next {phones.PAIRING_WINDOW_S // 60} min a new phone joins with its first answer "
-          "(answer one order or send a test).")
+          "(answer one request or send a test).")
     from . import autoupdate
     if autoupdate.describe() == "off":
         print(f"\nTip: let new Horncall versions install themselves: {command()} autoupdate on")
@@ -92,10 +135,58 @@ def cmd_unpair(args) -> None:
     print("Unpaired. The key has been deleted.")
 
 
+PC_OFF = -1  # pc_state value for "this PC is switched off" (0 = sends, a unix time = paused until then)
+
+
+def _was_paused() -> bool:
+    return (State.load().paused_until or 0) > time.time()
+
+
+def _announce_pc_state(config: Config, paused_until: float) -> None:
+    """Tells the phone whether this PC sends to it: 0 = sends, PC_OFF = off, else paused until that unix time.
+    Apps 0.8.0+ show it next to the PC; older apps ignore the message."""
+    try:
+        Link(config.key, config.server).send_pc_state(config.device_name, int(paused_until))
+    except Exception as exc:  # the phone just won't show it: nothing else depends on this
+        print(f"(The phone could not be told: {exc.__class__.__name__}.)")
+
+
+def _pause_pc(hours: float) -> None:
+    """`off --hours N` and its alias `pause [N]`: this PC sends nothing for N hours, then sends again."""
+    config = _require_config()
+    state = State.load()
+    if state.mode != "on" or (state.on_until is not None and time.time() >= state.on_until):
+        # Also when `on --hours N` has run out: pausing it would tell the phone "sends again at HH:MM" in vain.
+        sys.exit(f"Already off — nothing goes to the phone (start with: {command()} on).")
+    if not 0 < hours <= 24:
+        sys.exit(f"Give more than 0 and at most 24 hours (to stop for longer: {command()} off).")
+    state.paused_until = time.time() + hours * 3600
+    state.save()
+    _announce_pc_state(config, state.paused_until)
+    print(f"This PC sends nothing to the phone until {time.strftime('%H:%M', time.localtime(state.paused_until))}: "
+          f"the AI asks here. Send again now: {command()} on")
+
+
+def cmd_pause(args) -> None:
+    _pause_pc(args.hours)
+
+
+def cmd_resume(args) -> None:
+    config = _require_config()
+    state = State.load()
+    was = _was_paused()
+    state.paused_until = None
+    state.save()
+    if was:
+        _announce_pc_state(config, 0)
+    print("This PC sends to the phone again." if state.mode == "on" else f"Switched off: {command()} on")
+
+
 def cmd_on(args) -> None:
-    _require_config()
+    config = _require_config()
     until = time.time() + args.hours * 3600 if args.hours else None
     State(mode="on", on_until=until, on_since=time.time()).save()
+    _announce_pc_state(config, 0)
     suffix = f" for {args.hours:g} h" if args.hours else ""
     print(f"Approver ON{suffix} — permission requests go to your phone.")
     from . import pcdialog
@@ -108,8 +199,14 @@ def cmd_on(args) -> None:
 
 
 def cmd_off(args) -> None:
+    if args.hours is not None:
+        _pause_pc(args.hours)
+        return
     State(mode="off").save()
-    print("Approver OFF — Claude Code asks here, as usual.")
+    config = Config.load()
+    if config is not None:
+        _announce_pc_state(config, PC_OFF)
+    print("Approver OFF — the AI asks here, as usual.")
 
 
 def cmd_replies(args) -> None:
@@ -123,14 +220,40 @@ def cmd_replies(args) -> None:
         print("Replies OFF — the phone only hears that the task is done.")
 
 
+def cmd_codex_review(args) -> None:
+    config = _require_config()
+    if args.mode is None:
+        print(f"codex auto-review: {config.codex_auto_review}")
+        return
+    config.codex_auto_review = args.mode
+    config.save()
+    if args.mode == "follow":
+        print("Codex \"Approve for me\": its own reviewer decides, no card on the phone (risky commands still come). "
+              "Detected from Codex's session file: best effort.")
+    else:
+        print("Codex: every permission question goes to the phone, also in \"Approve for me\".")
+
+
+def cmd_deny_stops(args) -> None:
+    config = _require_config()
+    if args.switch is not None:
+        config.deny_stops = args.switch == "on"
+        config.save()
+    if config.deny_stops:
+        print("deny-stops: on - a deny from the phone also stops Claude Code until you write to it again.")
+    else:
+        print("deny-stops: off - after a deny the AI does not retry or work around it, and goes on with the rest "
+              "of the task if it can.")
+
+
 def cmd_pcdialog(args) -> None:
     config = _require_config()
     config.pc_dialog = args.switch == "on"
     config.save()
     if config.pc_dialog:
-        print("PC window ON — Codex, Gemini and Copilot orders also open a small window here; the first answer counts.")
+        print("PC window ON — requests from Codex, Gemini and Copilot also open a small window here; the first answer counts.")
     else:
-        print("PC window OFF — while the phone is on duty, Codex, Gemini and Copilot orders go to the phone only.")
+        print("PC window OFF — while requests go to the phone, those from Codex, Gemini and Copilot go to the phone only.")
 
 
 def cmd_noscreen(args) -> None:
@@ -179,25 +302,26 @@ def cmd_phones(args) -> None:
 def cmd_status(args) -> None:
     config = Config.load()
     state = State.load()
-    print(f"horncall {__version__}")
-    print(f"home:   {home_dir()}")
     if config is None:
-        print(f"paired: no  (run: {command()} pair)")
+        print(f"Horncall {__version__} · not paired yet — run: {command()} pair")
+        print(f"home:   {home_dir()}")
         return
-    mode = "on" if state.is_on() else "off"
-    if state.mode == "on" and (state.paused_until or 0) > time.time():
-        mode = f"off duty until {time.strftime('%H:%M', time.localtime(state.paused_until))} (from the PC window; {command()} on resumes now)"
-    if mode == "on" and state.on_until:
-        mode += f" (until {time.strftime('%H:%M', time.localtime(state.on_until))})"
+    reachable = Ntfy(config.server).ping()
+    for line in status_summary(config, state, reachable):
+        print(line)
+    print("\nDetails:")
+    print(f"home:   {home_dir()}")
     print(f"paired: yes  device={config.device_name}")
-    print(f"mode:   {mode}")
-    print(f"server: {config.server}  reachable={'yes' if Ntfy(config.server).ping() else 'NO'}")
+    print(f"server: {config.server}  reachable={'yes' if reachable else 'NO'}")
     print(f"timeout: {config.timeout_s}s, on timeout: {config.on_timeout}")
     print(f"replies: {'on — a finished task sends the start of the answer' if config.send_replies else 'off'}"
           f"  (change: {command()} replies on|off)")
-    window = "on — Codex/Gemini/Copilot/CodeBuddy/Crush orders also open a window here" if config.pc_dialog else         "off (back on: the phone app's switch, or pcdialog on)"
+    window = "on — Codex/Gemini/Copilot/CodeBuddy/Crush requests also open a window here" if config.pc_dialog else         "off (back on: the phone app's switch, or pcdialog on)"
     print(f"pc window: {window}"
           f"  (change: {command()} pcdialog on|off)")
+    review = ("follow — in \"Approve for me\" Codex's reviewer decides, risky commands still ask the phone"
+              if config.codex_auto_review == "follow" else "always-ask — every Codex permission question asks the phone")
+    print(f"codex auto-review: {review}  (change: {command()} codex-review follow|always-ask)")
     from . import pcdialog
     no_screen = f"{config.noscreen_wait_s} s on the phone, then the terminal" if config.noscreen_wait_s else "phone only"
     here = "" if pcdialog.can_show() else "  <- this machine has no screen"
@@ -218,8 +342,12 @@ def cmd_status(args) -> None:
     for warning in compat.floor_warnings([a.split(" ")[0] for a in agents]):
         print(f"warning: {warning}")
     if "plugin" in claude:
+        # The hooks.json Claude really runs: its cached copy of a ZIP install, else this install's own file.
+        root = install.zip_install_root()
+        copy = install.claude_plugin_copy(root) if root else None
         from . import update
-        direct = install.direct_hooks_python(update.INSTALL_ROOT / "plugin" / "hooks" / "hooks.json")
+        used = (copy / "hooks" / "hooks.json") if copy else (root or update.INSTALL_ROOT) / "plugin" / "hooks" / "hooks.json"
+        direct = install.direct_hooks_python(used)
         if direct is not None and not direct.is_file():
             print(f"warning: Claude's hooks start {direct}, which is gone — run: {command()} setup")
         elif direct is None and not setup.git_bash_found():  # direct hooks need no Git Bash
@@ -231,6 +359,21 @@ def cmd_status(args) -> None:
     latest =(Ntfy(config.server).latest_versions() or {}).get("plugin", {})
     if _newer(latest.get("version", ""), __version__):
         print(f"update: plugin {latest['version']} is available — run: {command()} update")
+
+
+def status_summary(config: Config, state: State, reachable: bool, now: float | None = None) -> list[str]:
+    """The three plain lines on top of `status`: version and phone, where requests go, the server."""
+    now = time.time() if now is None else now
+    clock = lambda t: time.strftime("%H:%M", time.localtime(t))  # noqa: E731
+    if state.mode != "on" or (state.on_until and state.on_until <= now):
+        where = f"Off — the AI asks here on the PC. To the phone: {command()} on"
+    elif (state.paused_until or 0) > now:
+        where = f"This PC sends nothing to the phone until {clock(state.paused_until)}. Send again now: {command()} on"
+    else:
+        where = "Requests go to the phone" + (f" until {clock(state.on_until)}" if state.on_until else "") + \
+            f". Back to the PC: {command()} off"
+    server = "Server reachable." if reachable else f"Server NOT reachable ({config.server}): requests cannot reach the phone."
+    return [f"Horncall {__version__} · paired with the phone (this PC: {config.device_name})", where, server]
 
 
 def _newer(candidate: str, current: str) -> bool:
@@ -246,8 +389,9 @@ def cmd_test(args) -> None:
     link = Link(config.key, config.server)
     request = protocol.build_request(
         {"tool_name": "Test", "tool_input": {"description": "Test from approver CLI",
-                                              "message": "Ready for orders?"}, "cwd": None},
+                                              "message": "Ready for requests?"}, "cwd": None},
         config.device_name, args.timeout, config.max_preview_chars)
+    request["label"] = "Test"  # without a chat behind it the phone showed it as "Unknown unit"
     print(f"Sending test request {request['id']} — answer it on the phone (waiting {args.timeout}s)…")
     response = link.request_and_wait(request, time.time() + args.timeout)
     if response is None:
@@ -301,7 +445,7 @@ def cmd_name(args) -> None:
     elif args.label:
         config.labels[key] = " ".join(args.label).strip()
         config.save()
-        print(f"Orders from {key} will be signed: «{config.labels[key]}»")
+        print(f"Requests from {key} will be signed: «{config.labels[key]}»")
     else:
         print(f"{key}: «{config.labels[key]}»" if key in config.labels else f"No label for {key}")
         for other, label in sorted(config.labels.items()):
@@ -409,6 +553,8 @@ def build_parser(prog: str = "approver") -> argparse.ArgumentParser:
     p.add_argument("--new", action="store_true", help="generate a new key even if already paired")
     p.add_argument("--server", help="ntfy server URL (default: the Horncall relay)")
     p.add_argument("--name", help="device name shown on the phone")
+    p.add_argument("--open", action="store_true",
+                   help="show the QR in the browser and print one line (used by /horncall:approver: no key in the chat)")
     p.set_defaults(func=cmd_pair)
 
     sub.add_parser("setup", help="guided setup: hook up the AI tools, pair the phone, send a test")\
@@ -425,14 +571,26 @@ def build_parser(prog: str = "approver") -> argparse.ArgumentParser:
     p.add_argument("--hours", type=float, help="switch back off automatically after N hours")
     p.set_defaults(func=cmd_on)
 
-    sub.add_parser("off", help="use the normal dialog on this PC").set_defaults(func=cmd_off)
+    p = sub.add_parser("off", help="use the normal dialog on this PC")
+    p.add_argument("--hours", type=float, help="only for N hours (at most 24), then requests go to the phone again")
+    p.set_defaults(func=cmd_off)
     sub.add_parser("status", help="show pairing and mode").set_defaults(func=cmd_status)
-    p = sub.add_parser("replies", help="send the start of the AI's answer with 'mission complete' (off by default)")
+    p = sub.add_parser("replies", help="send the start of the AI's answer with the task-done note (off by default)")
     p.add_argument("switch", choices=["on", "off"])
     p.set_defaults(func=cmd_replies)
-    p = sub.add_parser("pcdialog", help="Codex/Gemini/Copilot orders also open a window on this PC (on by default)")
+    p = sub.add_parser("pcdialog", help="Codex/Gemini/Copilot requests also open a window on this PC (on by default)")
     p.add_argument("switch", choices=["on", "off"])
     p.set_defaults(func=cmd_pcdialog)
+    p = sub.add_parser("pause", help="same as off --hours N (default 2): this PC sends nothing for a while")
+    p.add_argument("hours", nargs="?", type=float, default=2)
+    p.set_defaults(func=cmd_pause)
+    sub.add_parser("resume", help="end a pause of this PC").set_defaults(func=cmd_resume)
+    p = sub.add_parser("codex-review", help="Codex \"Approve for me\": follow its reviewer (no cards) or always ask the phone")
+    p.add_argument("mode", nargs="?", choices=["follow", "always-ask"])
+    p.set_defaults(func=cmd_codex_review)
+    p = sub.add_parser("deny-stops", help="a deny from the phone stops Claude Code's turn (on, default) or lets it go on without that step (off)")
+    p.add_argument("switch", nargs="?", choices=["on", "off"])
+    p.set_defaults(func=cmd_deny_stops)
     p = sub.add_parser("noscreen", help="where no PC window can open (SSH): seconds for the phone before the terminal asks")
     p.add_argument("value", help="seconds (default 120), or off = phone only")
     p.set_defaults(func=cmd_noscreen)
@@ -449,7 +607,7 @@ def build_parser(prog: str = "approver") -> argparse.ArgumentParser:
     p.add_argument("--auto", choices=["allow", "deny"], help="answer automatically")
     p.set_defaults(func=cmd_sim)
 
-    p = sub.add_parser("name", help="sign orders from a project folder with a label")
+    p = sub.add_parser("name", help="sign requests from a project folder with a label")
     p.add_argument("label", nargs="*", help="label text; empty = show current label")
     p.add_argument("--clear", action="store_true", help="remove the label")
     p.add_argument("--path", help="project folder (default: current directory)")
@@ -477,6 +635,22 @@ def build_parser(prog: str = "approver") -> argparse.ArgumentParser:
     p = sub.add_parser("uninstall", help="disconnect an AI agent, or 'all' to remove everything Horncall added")
     p.add_argument("agent", choices=agents + ["all"])
     p.set_defaults(func=cmd_uninstall)
+
+    def cmd_help(_args) -> None:
+        """Everyday commands first, then the rest with their one-line help (the skill points here: SKILL.md stays short)."""
+        everyday = ("pair", "on", "off", "status")
+        internal = {"hook", "event", "posttool", "sim"}
+        helps = {a.dest: a.help for a in sub._choices_actions}
+        print("Everyday:")
+        for name in everyday:
+            print(f"  {name:13} {helps.get(name, '')}")
+        print("Advanced:")
+        for name, text in helps.items():
+            if name not in everyday and name not in internal and name != "help":
+                print(f"  {name:13} {text}")
+        print(f"Details of one command: {prog} <command> --help")
+
+    sub.add_parser("help", help="list the commands").set_defaults(func=cmd_help)
     return parser
 
 

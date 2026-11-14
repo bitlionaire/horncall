@@ -388,8 +388,12 @@ def claude_definitions() -> dict:
 
 def hook_python() -> Path:
     """A real Python 3 for the hooks: the base interpreter behind our venv (never the Microsoft Store stub,
-    which can't have run this code)."""
-    return Path(getattr(sys, "_base_executable", None) or sys.executable).resolve()
+    which can't have run this code). Never pythonw.exe: the background processes that also write hooks run under
+    it, and the blocking permission hooks must not depend on a GUI interpreter (review of 0.7.3)."""
+    python = Path(getattr(sys, "_base_executable", None) or sys.executable).resolve()
+    if python.name.lower() == "pythonw.exe" and python.with_name("python.exe").is_file():
+        return python.with_name("python.exe")
+    return python
 
 
 def plugin_exec_hooks(python: Path, launcher: Path) -> dict:
@@ -452,18 +456,39 @@ def direct_hooks_python(hooks_json: Path) -> Path | None:
     return Path(hook["command"]) if hook.get("args") else None
 
 
+def zip_install_root() -> Path | None:
+    """The ZIP install behind this code: the folder it runs from, or — when Claude runs its own cached copy of the
+    plugin — the folder Claude's horncall marketplace points at (review of 0.7.3: from the cache, the install
+    looked like "pip" and nothing was repaired). None for git, pip and GitHub installs."""
+    from . import update
+    root = update.INSTALL_ROOT
+    if update.how_installed(root) == "zip":
+        return root
+    plugins = claude_settings().parent / "plugins"
+    try:
+        source = (_load_json(plugins / "known_marketplaces.json").get("horncall") or {}).get("source") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    folder = Path(source["path"]) if isinstance(source, dict) and source.get("path") else None
+    if folder is not None and (folder / "plugin" / "hooks" / "approver_launcher.py").is_file() \
+            and update.how_installed(folder) == "zip":
+        return folder
+    return None
+
+
 def ensure_direct_hooks() -> list[Path]:
     """Puts the direct form back where it is missing: an update made by an older version (which didn't know
     it) or Claude refreshing its copy from a package left the shell form. Cheap: two small files read."""
     if os.name != "nt":
         return []
-    from . import update
-    root = update.INSTALL_ROOT
-    if update.how_installed(root) != "zip":
+    root = zip_install_root()
+    if root is None:
         return []
     copy = claude_plugin_copy(root)
     targets = [root / "plugin" / "hooks" / "hooks.json"] + ([copy / "hooks" / "hooks.json"] if copy else [])
-    if all((python := direct_hooks_python(t)) is not None and python.is_file() for t in targets):
+    # pythonw.exe counts as missing: 0.7.2/0.7.3 could write it from a background process (review of 0.8.0).
+    if all((python := direct_hooks_python(t)) is not None and python.is_file() and python.name.lower() != "pythonw.exe"
+           for t in targets):
         return []
     return write_direct_hooks(root)
 

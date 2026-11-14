@@ -155,12 +155,12 @@ def test_opencode_question_is_a_card_for_the_phone():
     oc = agents.get("opencode")
     raw = {"hook_event_name": "question.asked", "request_id": "chatcmpl-tool-b794", "session_id": "ses_e347",
            "cwd": "C:/x", "tool_name": "question", "tool_input": {"questions": [{
-               "header": "Napoje", "multiple": False, "question": "Herbata czy kawa?",
-               "options": [{"description": "Wybór nr 1", "label": "Herbata"}, {"description": "Wybór nr 2", "label": "Kawa"}]}]}}
+               "header": "Drinks", "multiple": False, "question": "Tea or coffee?",
+               "options": [{"description": "Choice 1", "label": "Tea"}, {"description": "Choice 2", "label": "Coffee"}]}]}}
     q = oc.parse(raw)
     assert q.tool == "AskUserQuestion" and q.notify_only and not q.answered_later
-    assert q.tool_input["questions"] == [{"header": "Napoje", "question": "Herbata czy kawa?", "options": [
-        {"description": "Wybór nr 1", "label": "Herbata"}, {"description": "Wybór nr 2", "label": "Kawa"}]}]
+    assert q.tool_input["questions"] == [{"header": "Drinks", "question": "Tea or coffee?", "options": [
+        {"description": "Choice 1", "label": "Tea"}, {"description": "Choice 2", "label": "Coffee"}]}]
     # The tool's end sends the same payload: same fingerprint, so the card leaves the phone.
     again = oc.parse(raw)
     assert protocol.order_fp(again.session_id, again.tool, again.tool_input) == protocol.order_fp(q.session_id, q.tool, q.tool_input)
@@ -232,20 +232,20 @@ def _codex_question_run(approver_home, tool, tool_input):
 
 def test_codex_async_question_goes_to_the_phone_without_waiting(approver_home):
     sent, out = _codex_question_run(approver_home, "request_user_input_async", {"questions": [
-        {"title": "Czy zatwierdzasz dodanie plików podglądu?", "options": ["Tak, zatwierdzam", "Tylko wersja tymczasowa"]}]})
+        {"title": "Do you approve adding the preview files?", "options": ["Yes, approve", "Only a temporary version"]}]})
     assert out == ""  # no opinion: Codex shows the question at once
     card = sent[0]
     assert card["tool"] == "AskUserQuestion" and card["needs_pc"] and card["answered_later"]
-    assert card["title"].startswith("Question: Czy zatwierdzasz") and "• Tylko wersja tymczasowa" in card["preview"]
+    assert card["title"].startswith("Question: Do you approve") and "• Only a temporary version" in card["preview"]
     assert card["expires_at"] - card["ts"] == 1800
     assert not list((approver_home / "pending").glob("*"))  # answered later: the next "working" takes it off
 
 
 def test_codex_sync_question_card_leaves_when_the_tool_returns(approver_home):
     sent, out = _codex_question_run(approver_home, "request_user_input", {"questions": [
-        {"id": "db", "header": "Baza", "question": "Którą bazę?", "options": [{"label": "SQLite", "description": "prosto"}]}]})
+        {"id": "db", "header": "Database", "question": "Which database?", "options": [{"label": "SQLite", "description": "simple"}]}]})
     assert out == "" and "answered_later" not in sent[0]
-    assert "[Baza] Którą bazę?" in sent[0]["preview"] and "SQLite – prosto" in sent[0]["preview"]
+    assert "[Database] Which database?" in sent[0]["preview"] and "SQLite \u2013 simple" in sent[0]["preview"]
     assert len(list((approver_home / "pending").glob("*"))) == 1  # PostToolUse finds it after the answer
 
 
@@ -323,7 +323,7 @@ def test_idle_sends_the_answer_only_when_replies_are_on(tmp_path, approver_home)
 
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [
-        {"type": "text", "text": "Gotowe, testy przechodzą."}]}}) + "\n", encoding="utf-8")
+        {"type": "text", "text": "Done, the tests pass."}]}}) + "\n", encoding="utf-8")
     payload = json.dumps({"session_id": "s7", "cwd": "/repo/app", "transcript_path": str(transcript)})
     hook.run_event(io.StringIO(payload), "claude", "idle", link_factory=FakeLink)
     config.send_replies = True
@@ -331,7 +331,7 @@ def test_idle_sends_the_answer_only_when_replies_are_on(tmp_path, approver_home)
     hook.run_event(io.StringIO(payload), "claude", "working", link_factory=FakeLink)
     hook.run_event(io.StringIO(payload), "claude", "idle", link_factory=FakeLink)
     assert "reply" not in sent[0] and "reply" not in sent[1]
-    assert sent[2]["reply"] == "Gotowe, testy przechodzą."
+    assert sent[2]["reply"] == "Done, the tests pass."
 
 
 def test_late_idle_of_a_dead_session_sends_no_duration(monkeypatch, approver_home):

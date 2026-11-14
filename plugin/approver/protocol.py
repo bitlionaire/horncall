@@ -179,12 +179,37 @@ def rate_risk(tool: str, tool_input: dict, cwd: str | None, patterns: list[str] 
     return "danger" if risk_reasons(tool, tool_input, cwd, patterns) else "normal"
 
 
+def command_title(command: str) -> str:
+    """The first line of a shell command that says something: a title like "PowerShell: @'" (a here-string's
+    opening) or a comment tells the phone's user nothing. A PowerShell here-string is data: the title is what
+    follows its closing line ("'@ | python -" gives "python -"). Comments and blank lines are skipped; a command
+    made only of those keeps its first line."""
+    lines = [line.strip() for line in command.splitlines()]
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line or line.startswith("#"):
+            i += 1
+            continue
+        if re.fullmatch(r"(\$[\w:.-]+\s*=\s*)?@['\"]", line):  # @'  or  $text = @'  (here-string start)
+            quote = line[-1]
+            end = next((j for j in range(i + 1, len(lines)) if lines[j].startswith(quote + "@")), None)
+            if end is None:
+                break
+            rest = lines[end][2:].strip().lstrip("|").strip()
+            if rest:
+                return rest
+            i = end + 1
+            continue
+        return line
+    return next((line for line in lines if line), "")
+
+
 def describe(tool: str, tool_input: dict, limit: int) -> tuple[str, str]:
     """Return (title, preview) for the phone card."""
     if tool in ("Bash", "PowerShell"):
         command = str(tool_input.get("command", ""))
-        first = command.strip().splitlines()[0] if command.strip() else ""
-        return f"{tool}: {_short(first, 60)}", _short(command, limit)
+        return f"{tool}: {_short(command_title(command), 60)}", _short(command, limit)
     if tool == "Write":
         path = tool_input.get("file_path", "")
         return f"Write: {Path(path).name}", _short(f"{path}\n\n{tool_input.get('content', '')}", limit)
@@ -205,6 +230,9 @@ def describe(tool: str, tool_input: dict, limit: int) -> tuple[str, str]:
         return f"MCP {server}: {name}", _short(json.dumps(tool_input, ensure_ascii=False, indent=1), limit)
     if tool == "AskUserQuestion":
         return describe_questions(tool_input, limit)
+    if tool == "Test":
+        # `approver test` / setup: the message itself, not the JSON around it (owner 2026-11-13).
+        return "Test", _short(str(tool_input.get("message") or "Test"), limit)
     if tool == "ExitPlanMode":
         plan = str(tool_input.get("plan") or "").strip()
         return "Plan ready for approval", _short(plan or json.dumps(tool_input, ensure_ascii=False, indent=1), limit)
@@ -305,12 +333,18 @@ def signed_payload(response: dict) -> bytes:
 
 
 def make_status(hook_input: dict, device: str, agent: str, state: str, since: int, worked_s: int | None = None,
-                labels: dict[str, str] | None = None) -> dict:
-    """A unit started ("working") or finished ("idle") a task — the barracks show it with a timer."""
+                labels: dict[str, str] | None = None, seq: int | None = None) -> dict:
+    """A unit started ("working") or finished ("idle") a task — the barracks show it with a timer.
+
+    seq (plugin 0.8.0+): the order of this chat's starts and ends on the PC's clock — call time in ms, doubled, +1
+    for a start, so a start in the same millisecond as the previous turn's end still counts as newer. Reports go
+    out in the background and may arrive out of order; the app keeps the one with the higher seq."""
     cwd = hook_input.get("cwd")
     message = {"v": PROTOCOL_VERSION, "type": "status", "id": new_id(), "ts": int(time.time()),
                "device": device, "agent": agent, "state": state, "since": int(since),
                "project": Path(cwd).name if cwd else ""}
+    if seq is not None:
+        message["seq"] = int(seq)
     session_id = hook_input.get("session_id")
     if session_id:
         message["session"] = codename(str(session_id), agent)
@@ -341,6 +375,14 @@ def make_resolved(fp: str, request_id: str | None = None) -> dict:
     if request_id:
         message["request"] = request_id
     return message
+
+
+def make_pc_state(device: str, paused_until: int) -> dict:
+    """Whether this PC sends to the phone: `paused_until` 0 = sends, -1 = switched off, else paused until that unix
+    time. Plugin 0.8.0+: the phone shows it next to the PC, apart from its own mute (which covers every paired PC).
+    Older apps ignore it."""
+    return {"v": PROTOCOL_VERSION, "type": "pc_state", "id": new_id(), "ts": int(time.time()),
+            "device": device, "paused_until": int(paused_until)}
 
 
 def make_cancel(request_id: str, reason: str) -> dict:

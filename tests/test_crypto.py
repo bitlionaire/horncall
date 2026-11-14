@@ -27,7 +27,7 @@ def test_topic_vectors():
 
 def test_roundtrip_unicode():
     key = crypto.new_key()
-    msg = {"type": "request", "preview": "zażółć gęślą jaźń 🗡️"}
+    msg = {"type": "request", "preview": "za\u017c\u00f3\u0142\u0107 g\u0119\u015bl\u0105 ja\u017a\u0144 \U0001f5e1\ufe0f"}
     env = crypto.seal(key, "ca-x", msg)
     assert crypto.open_envelope(key, "ca-x", env) == msg
 
@@ -55,4 +55,4 @@ def test_key_length_enforced():
 def test_envelope_vector():
     # Fixed-nonce vector: the Kotlin side must open exactly this envelope.
     env = json.dumps({"v": 1, "n": crypto.b64u_encode(bytes(12)), "c": ENVELOPE_C})
-    assert crypto.open_envelope(VECTOR_KEY, "ca-test", env) == {"type": "ping", "txt": "zażółć"}
+    assert crypto.open_envelope(VECTOR_KEY, "ca-test", env) == {"type": "ping", "txt": "za\u017c\u00f3\u0142\u0107"}

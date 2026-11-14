@@ -1,36 +1,25 @@
 ---
 name: approver
 description: Control Horncall (phone approvals of permission requests). Use when the user types /approver or asks to pair the phone, turn phone approvals on/off ("I'm leaving my desk", "I'm back"), check status, send a test, or unpair.
-argument-hint: "pair | on [--hours N] | off | status | test | replies on|off | pcdialog on|off | update | name \"label\" | unpair"
+argument-hint: "on [--hours N] | off [--hours N] | status | pair | test | help"
+context: fork
+model: haiku
+background: false
 ---
 
-# Horncall
-
-Run the launcher with Python, passing the user's arguments (default: `status`).
-The launcher lives two directories above this skill's base directory:
+Run exactly one command, with the user's arguments (none given: `status`). The launcher is two directories above
+this skill's base directory:
 
 ```
 python "<skill base directory>/../../hooks/approver_launcher.py" <args>
 ```
 
-On Windows, if `python` is not found, try `py -3`.
+On Windows, if `python` is not found, use `py -3` instead of `python`.
 
-| Argument | Effect |
-|---|---|
-| `pair` | first run creates a private venv (~/.horncall/venv), then prints a QR code to scan in the Android app. Add `--new` to rotate the key, `--server URL` for a self-hosted ntfy. |
-| `on` | requests go to the phone (user is away). `--hours N` switches off automatically. |
-| `off` | normal permission dialog on this PC. |
-| `status` | pairing, mode, server reachability. |
-| `test` | sends a test request and waits for the phone's answer. |
-| `name "label"` | signs orders from the current project folder with a label shown big on the phone (run from the project folder; `--clear` removes it, no text shows it). Each chat also gets an automatic codename like "Grunt Ironjaw". |
-| `replies on` / `replies off` | when a task ends, also send the first lines of the AI's answer (plain text, max 240 chars, encrypted) so the phone shows them with "mission complete". Off by default. |
-| `pcdialog on` / `pcdialog off` | Codex, Gemini and Copilot show nothing of their own while the phone is asked; with this on (default) the same order also opens a small window on the PC, and the first answer counts. |
-| `phones` / `phones forget <key start>` | lists trusted phones (key, added, last answer); `forget` removes one, e.g. an old phone or an uninstalled app (never the last one). |
-| `autoupdate on` / `off` | new Horncall versions install themselves (marketplace: Claude Code's own auto-update; ZIP: a signed release once a day). No argument shows the state. |
-| `update` | downloads the newest plugin release from the relay, checks its signature and installs it over this folder (pairing kept). Tell the user to restart Claude Code afterwards. |
-| `unpair` | deletes the key. |
+- `pair` → run it as `pair --open` (add any other arguments the user gave). It opens the QR on the screen; never
+  print a QR code, a `horncall://` link or a key.
+- Everyday: `on [--hours N]` (requests go to the phone), `off` (the PC asks as usual), `off --hours N` (this PC
+  sends nothing for N hours), `status`, `test`. Everything else: `help`.
+- After `update`, tell the user to restart Claude Code.
 
-Notes:
-- After `pair`, show the user the QR code output as-is (in a code block) so it stays scannable, and also the `horncall://` link.
-- While mode is `on`, a question waits on the phone for up to 30 minutes; answering it on the PC instead drops the phone card.
-- Never print or log the key except as part of the pairing output the user explicitly asked for.
+Your final message is shown to the user: the command's output, unchanged and without comments.

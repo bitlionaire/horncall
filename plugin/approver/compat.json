@@ -102,7 +102,7 @@
         "deny": {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "..."}}}
       },
       "no_opinion": "empty stdout, exit 0: Codex uses its approval policy",
-      "watch": ["hooks.json", "PermissionRequest", "hooks must be trusted again in /hooks after any change to them", "apply_patch", "exec_command / unified_exec", "timeout cap (we keep 600 s)", "request_user_input(_async) reach only PreToolUse (no approval): card sent, no wait; checked in source 2026-11-05 (registry.rs default pre_tool_use_payload)"]
+      "watch": ["hooks.json", "PermissionRequest", "hooks must be trusted again in /hooks after any change to them", "apply_patch", "exec_command / unified_exec", "timeout cap (we keep 600 s)", "request_user_input(_async) reach only PreToolUse (no approval): card sent, no wait; checked in source 2026-11-05 (registry.rs default pre_tool_use_payload)", "Approve for me: PermissionRequest input is identical to the normal mode (0.167); the mode is read from the rollout file, turn_context.approvals_reviewer (auto_review|user) matched by turn_id (hook.codex_reviewer)"]
     },
     "codebuddy": {
       "title": "CodeBuddy Code",
@@ -181,7 +181,7 @@
         "deny": {"decision": "deny", "reason": "..."}
       },
       "no_opinion": "empty stdout: the plugin doesn't reply, opencode's own question stays open",
-      "watch": ["V2 plugin API (export default {id, setup})", "event names permission.asked / permission.replied / session.execution.*", "Permission.Reply once/always/reject", "default permissions * = allow (nothing is asked, nothing reaches the phone)", "plugin tools bypass permissions (#50652)", "V1 (opencode-ai) has no working permission hook", "Bun/Node child_process on Windows"]
+      "watch": ["V2 plugin API (export default {id, setup})", "event names permission.asked / permission.replied / session.execution.*", "Permission.Reply once/always/reject", "default permissions * = allow (nothing is asked, nothing reaches the phone)", "question tool only in session.tool.called (no tool name, input.questions), card removed on session.tool.success/failed/interrupted", "plugin tools bypass permissions (#50652)", "V1 (opencode-ai) has no working permission hook", "Bun/Node child_process on Windows"]
     }
   }
 }

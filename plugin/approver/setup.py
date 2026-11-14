@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import compat, crypto, install, phones, protocol
-from .config import Config, app_dir, home_dir
+from .config import Config, app_dir, home_dir, write_secret
 from .link import Link
 
 MARKETPLACE_ROOT = install.PLUGIN_ROOT.parent  # the unpacked ZIP / repo: .claude-plugin/marketplace.json
@@ -178,14 +178,15 @@ def pairing_page(config: Config, uri: str) -> Path:
     from qrcode.image.svg import SvgPathImage
     svg = qrcode.make(uri, image_factory=SvgPathImage, box_size=12).to_string(encoding="unicode")
     page = home_dir() / "pair.html"
-    page.write_text(f"""<!doctype html><meta charset="utf-8"><title>Horncall — pair your phone</title>
-<style>body{{background:#0E1013;color:#E8E6E1;font:16px system-ui;text-align:center;padding:24px}}
-.qr{{background:#fff;display:inline-block;padding:16px;border-radius:12px}} code{{word-break:break-all;color:#9AA0A8}}
-h1{{color:#FFC857;letter-spacing:.08em}}</style>
-<h1>HORNCALL</h1><p>Open Horncall on the phone → <b>Scan QR</b> (Polish: <b>Skanuj QR</b>) → scan this code.</p>
+    # Holds the pairing key: readable by this user only, like config.json.
+    write_secret(page, f"""<!doctype html><meta charset="utf-8"><title>Horncall — pair your phone</title>
+<style>body{{background:#101214;color:#F1F3F5;font:16px system-ui;text-align:center;padding:24px}}
+.qr{{background:#fff;display:inline-block;padding:16px;border-radius:12px}} code{{word-break:break-all;color:#A7AFBA}}
+h1{{color:#E8BD62;letter-spacing:.08em}}</style>
+<h1>HORNCALL</h1><p>Open Horncall on the phone → <b>Add computer</b> (Polish: <b>Dodaj komputer</b>) → scan this code.</p>
 <div class="qr">{svg}</div>
-<p>PC: <b>{html.escape(config.device_name)}</b></p><p>No camera? Paste this code in the app (<i>Paste link</i>):</p>
-<p><code>{html.escape(uri)}</code></p><p><b>Keep this code to yourself:</b> it holds this PC's key (whoever has it can read your orders). Don't share screenshots of this page.</p><p>Then go back to the setup window.</p>""", encoding="utf-8")
+<p>PC: <b>{html.escape(config.device_name)}</b></p><p>No camera? Paste this link in the same window instead:</p>
+<p><code>{html.escape(uri)}</code></p><p><b>Keep this code to yourself:</b> it holds this PC's key (whoever has it can read your requests). Don't share screenshots of this page.</p><p>Then go back to the setup window.</p>""")
     return page
 
 
@@ -279,9 +280,9 @@ def run(ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
         say("   Scan this QR code in the app (Scan QR). Too big? Widen the window or zoom out.")
         print_qr(uri, say)
     say(f"   No camera? In the app tap Paste link and paste:\n   {uri}")
-    ask("   Press Enter when the phone shows this PC in the barracks… ")
+    ask("   Press Enter when the phone lists this PC… ")
 
-    say("\n4/4  Test order — answer it on the phone")
+    say("\n4/4  Test request — answer it on the phone")
     link = link_factory(config.key, config.server)
     request = protocol.build_request(
         {"tool_name": "Test", "tool_input": {"description": "Horncall setup", "message": "Hup hup! Horncall is ready."},
@@ -301,7 +302,7 @@ def run(ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
         response = None
         say(f"   Network problem: {exc.__class__.__name__}")
     if response is None:
-        say("   No answer. Check the phone (Listen for orders on, internet), then: " + ("horncall" if install.packaged() else "approver") + " test")
+        say("   No answer. Check the phone (listening switched on, internet), then: " + ("horncall" if install.packaged() else "approver") + " test")
     else:
         say(f"   ✓ The phone answered ({response['decision']})" + (f" — trusted, key {joined[0]}" if joined else ""))
 

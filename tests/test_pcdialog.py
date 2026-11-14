@@ -87,7 +87,10 @@ def test_off_duty_hands_the_order_back_and_pauses_this_pc(monkeypatch):
     fake_window(monkeypatch, "offduty")
     transport = SlowTransport()
     assert run("codex", CODEX_BASH, transport) == ""  # no opinion: the AI asks in its own way
-    assert [m["type"] for m in _sent(transport)] == ["request", "cancel"]  # the card leaves the phone
+    # The card leaves the phone, and the phone learns this PC is paused (apps 0.8.0+ show it next to the PC).
+    sent = _sent(transport)
+    assert [m["type"] for m in sent] == ["request", "cancel", "pc_state"]
+    assert sent[2]["paused_until"] > __import__("time").time() + 7000
     state = State.load()
     assert not state.is_on() and state.paused_until > __import__("time").time() + 7000
     assert state.is_on(now=state.paused_until + 1)  # duty comes back by itself

@@ -74,6 +74,71 @@ def test_claude_copy_only_for_a_marketplace_in_this_folder(tmp_path, monkeypatch
     assert install.claude_plugin_copy(other) is None  # GitHub install: Claude's own business
 
 
+def test_the_zip_install_is_found_from_claudes_cached_copy(tmp_path, monkeypatch):
+    """R4 (review of 0.7.3): run from Claude's cache the install looked like "pip" and nothing was repaired.
+    Real folders, no monkeypatched how_installed: the repo itself is a git checkout, the ZIP install is in tmp."""
+    root, cache = fake_install(tmp_path, monkeypatch)
+    assert update.how_installed(update.INSTALL_ROOT) == "git"
+    assert install.zip_install_root() == root
+    known = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins" / "known_marketplaces.json"
+    known.write_text(json.dumps({"horncall": {"source": {"source": "github", "repo": "bitlionaire/horncall"}}}))
+    assert install.zip_install_root() is None  # a GitHub install is Claude's own business
+
+
+@windows_only
+def test_ensure_repairs_claudes_copy_when_run_from_the_cache(tmp_path, monkeypatch):
+    root, cache = fake_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(install, "hook_python", lambda: Path(sys.executable).resolve())
+    written = install.ensure_direct_hooks()
+    assert cache / "hooks" / "hooks.json" in written
+    assert install.direct_hooks_python(cache / "hooks" / "hooks.json") == Path(sys.executable).resolve()
+
+
+def test_status_judges_the_hooks_claude_really_runs(tmp_path, monkeypatch, capsys):
+    """R8: the ZIP folder had direct hooks, Claude's copy was still in the shell form, Git Bash was missing — and
+    status stayed quiet."""
+    from approver import cli, crypto, setup
+    from approver.config import Config, State
+    root, cache = fake_install(tmp_path, monkeypatch)
+    python = Path(sys.executable).resolve()
+    (root / "plugin" / "hooks" / "hooks.json").write_text(
+        json.dumps(install.plugin_exec_hooks(python, root / "plugin" / "hooks" / "approver_launcher.py")))
+    Config(key=crypto.b64u_encode(b"k" * 32)).save()
+    State(mode="on").save()
+    monkeypatch.setattr(setup, "claude_plugin_installed", lambda: True)
+    monkeypatch.setattr(setup, "git_bash_found", lambda: False)
+    monkeypatch.setattr(cli.Ntfy, "latest_versions", lambda self, timeout=5: {})
+    monkeypatch.setattr(cli.Ntfy, "ping", lambda self, timeout=5: True, raising=False)
+    cli.main(["status"])
+    assert "Git Bash" in capsys.readouterr().out
+    # The other way round: Claude's copy runs Python directly, so a missing Git Bash doesn't matter.
+    (cache / "hooks" / "hooks.json").write_text(
+        json.dumps(install.plugin_exec_hooks(python, root / "plugin" / "hooks" / "approver_launcher.py")))
+    cli.main(["status"])
+    assert "Git Bash" not in capsys.readouterr().out
+
+
+@windows_only
+def test_hooks_left_on_pythonw_by_an_older_version_are_rewritten(tmp_path, monkeypatch):
+    """Review of 0.8.0: 0.7.2/0.7.3 could write pythonw.exe from a background process; ensure must fix it."""
+    root, cache = fake_install(tmp_path, monkeypatch)
+    pythonw = tmp_path / "pythonw.exe"
+    pythonw.write_text("")
+    for target in (root / "plugin" / "hooks" / "hooks.json", cache / "hooks" / "hooks.json"):
+        target.write_text(json.dumps(install.plugin_exec_hooks(pythonw, root / "plugin" / "hooks" / "approver_launcher.py")))
+    monkeypatch.setattr(install, "hook_python", lambda: Path(sys.executable).resolve())
+    assert len(install.ensure_direct_hooks()) == 2
+    assert install.direct_hooks_python(cache / "hooks" / "hooks.json").name.lower() == "python.exe"
+
+
+def test_hooks_never_get_pythonw(tmp_path, monkeypatch):
+    """R6: the background processes run under pythonw.exe; the permission hooks they write must use python.exe."""
+    (tmp_path / "python.exe").write_text("")
+    (tmp_path / "pythonw.exe").write_text("")
+    monkeypatch.setattr(sys, "_base_executable", str(tmp_path / "pythonw.exe"), raising=False)
+    assert install.hook_python().name == "python.exe"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="non-Windows branch")
 def test_nothing_is_written_outside_windows(tmp_path, monkeypatch):
     root, _ = fake_install(tmp_path, monkeypatch)
