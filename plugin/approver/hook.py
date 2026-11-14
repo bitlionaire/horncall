@@ -510,7 +510,8 @@ def _pending_marker(fp: str, session_id: str | None, request_id: str, tool: str 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         # t with milliseconds: a late task report compares it with the moment it was called (_asked_before).
-        path.write_text(json.dumps({"session": session_id, "id": request_id, "t": round(time.time(), 3), "tool": tool, "fp": fp}),
+        # Cut, never rounded up: a marker made in the same millisecond as the call must not look newer (CI 11-14).
+        path.write_text(json.dumps({"session": session_id, "id": request_id, "t": int(time.time() * 1000) / 1000, "tool": tool, "fp": fp}),
                         encoding="utf-8")
     except OSError:
         return None
